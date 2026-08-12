@@ -1,0 +1,9 @@
+streamlit>=1.45.0
+pandas>=2.2.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+geopandas>=0.14.0
+plotly>=5.20.0
+matplotlib>=3.8.0
+shapely>=2.0.0
+pyogrio>=0.7.0

@@ -1,0 +1,29 @@
+name: acute_malnutrition_chap
+
+uv_env: pyproject.toml
+min_prediction_length: 1
+max_prediction_length: 3
+
+entry_points:
+  train:
+    parameters:
+      train_data: str
+      model: str
+    command: "python train.py {train_data} {model}"
+  predict:
+    parameters:
+      historic_data: str
+      future_data: str
+      model: str
+      out_file: str
+    command: "python predict.py {model} {historic_data} {future_data} {out_file}"
+
+meta_data:
+  display_name: "Acute Malnutrition Forecasting Tool"
+  description: >
+    Monthly district-level acute malnutrition forecasting model prepared for
+    DHIS2 CHAP integration. The model consumes CHAP-format case-count and
+    covariate data and returns probabilistic forecasts as sample columns.
+  author: "Acute Malnutrition Forecasting Tool contributors"
+  author_assessed_status: orange
+  documentation_url: "https://github.com/REPLACE_WITH_YOUR_ORG/acute-malnutrition-early-warning"
