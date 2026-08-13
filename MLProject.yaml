@@ -1,5 +1,4 @@
 name: acute_malnutrition_chap
-
 uv_env: pyproject.toml
 min_prediction_length: 1
 max_prediction_length: 3
@@ -10,6 +9,7 @@ entry_points:
       train_data: str
       model: str
     command: "python train.py {train_data} {model}"
+
   predict:
     parameters:
       historic_data: str
@@ -26,4 +26,4 @@ meta_data:
     covariate data and returns probabilistic forecasts as sample columns.
   author: "Acute Malnutrition Forecasting Tool contributors"
   author_assessed_status: orange
-  documentation_url: "https://github.com/REPLACE_WITH_YOUR_ORG/acute-malnutrition-early-warning"
+  documentation_url: "https://github.com/omielp/acute-malnutrition-RF-model"
