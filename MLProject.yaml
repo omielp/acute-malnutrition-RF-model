@@ -13,10 +13,8 @@ required_covariates:
   - average_gpp
   - malaria_confirmed
   - pneumonia_cases
-  - pregnant_women_with_Anaemia
-  - diarrhea_acute
+  - diarrhea
   - low_birth_weight_babies
-  - diarrhea_persistent
   - population
 
 entry_points:
@@ -40,6 +38,13 @@ meta_data:
     Monthly district-level acute malnutrition forecasting model prepared for
     DHIS2 CHAP integration. The model consumes CHAP-format case-count and
     covariate data and returns probabilistic forecasts as sample columns.
+    Child-health covariates are interpreted as under-5 inputs, with
+    malaria_confirmed, pneumonia_cases, and diarrhea as under-5 case counts,
+    population as the under-5 denominator, and low_birth_weight_babies as a
+    neonatal indicator. Missing covariates are imputed with rule-based
+    district-aware preprocessing, extreme modeled covariates are capped with
+    robust thresholds, and suspicious target spikes are flagged for QC rather
+    than clipped by default.
   author: "HISP Uganda"
   author_assessed_status: orange
   documentation_url: "https://github.com/omielp/acute-malnutrition-RF-model"

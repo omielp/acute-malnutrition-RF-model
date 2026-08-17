@@ -1,6 +1,5 @@
 import calendar
 import hashlib
-from itertools import product
 import json
 import os
 import warnings
@@ -16,17 +15,10 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
     mean_absolute_error,
     mean_squared_error,
-    precision_score,
-    recall_score,
 )
 
 warnings.filterwarnings("ignore")
@@ -40,7 +32,35 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = APP_DIR if os.path.isdir(os.path.join(APP_DIR, "data", "sample")) else os.path.dirname(APP_DIR)
 DEFAULT_CSV_PATH = os.path.join(PROJECT_ROOT, "data", "sample", "Acute_Malnutrition_data_district.csv")
 DEFAULT_GEOJSON_PATH = os.path.join(PROJECT_ROOT, "data", "sample", "uganda-districts_ug.geojson")
-MODEL_SCHEMA_VERSION = "anomaly-4level-v5"
+MODEL_SCHEMA_VERSION = "anomaly-4level-v9"
+LEGACY_DIARRHEA_COLUMNS = ("diarrhea_acute", "diarrhea_persistent")
+CLIMATE_COVARIATES = [
+    "mean_temperature",
+    "rainfall",
+    "mean_relative_humidity",
+    "average_gpp",
+]
+CHILD_HEALTH_COVARIATES = [
+    "malaria_confirmed",
+    "pneumonia_cases",
+    "diarrhea",
+    "low_birth_weight_babies",
+]
+SLOW_MOVING_COVARIATES = ["population"]
+MODELED_COVARIATES = CLIMATE_COVARIATES + CHILD_HEALTH_COVARIATES + SLOW_MOVING_COVARIATES
+MISSING_FLAG_SUFFIX = "_missing"
+OUTLIER_FLAG_SUFFIX = "_outlier"
+COUNT_COVARIATES = CHILD_HEALTH_COVARIATES
+LAGGED_EXOG_COVARIATES = [
+    "mean_temperature",
+    "rainfall",
+    "mean_relative_humidity",
+    "average_gpp",
+    "malaria_confirmed",
+    "pneumonia_cases",
+    "diarrhea",
+    "low_birth_weight_babies",
+]
 
 RISK_LEVELS = ["Low", "Moderate", "High", "Extreme"]
 RISK_ORDER = {
@@ -85,42 +105,40 @@ ANOMALY_GUIDANCE = {
     "Extreme": "Exceptionally high",
 }
 
-SKEWED_COVS = [
-    "malaria_confirmed",
-    "pneumonia_cases",
-    "pregnant_women_with_Anaemia",
-    "diarrhea_acute",
-    "low_birth_weight_babies",
-    "diarrhea_persistent",
-    "population",
-]
+SKEWED_COVS = CHILD_HEALTH_COVARIATES + SLOW_MOVING_COVARIATES
 
-FEATURE_COLS_NEW = [
-    "mean_temperature",
-    "rainfall",
-    "mean_relative_humidity",
-    "average_gpp",
-    "malaria_confirmed",
-    "pneumonia_cases",
-    "pregnant_women_with_Anaemia",
-    "diarrhea_acute",
-    "low_birth_weight_babies",
-    "diarrhea_persistent",
-    "population",
-]
+FEATURE_COLS_NEW = MODELED_COVARIATES
 
 NICE_NAMES = {
     "mean_temperature": "Mean Temperature",
     "rainfall": "Rainfall",
     "mean_relative_humidity": "Relative Humidity",
     "average_gpp": "Avg GPP",
-    "malaria_confirmed": "Malaria Confirmed",
-    "pneumonia_cases": "Pneumonia Cases",
-    "pregnant_women_with_Anaemia": "Pregnant Women w/ Anaemia",
-    "diarrhea_acute": "Acute Diarrhoea",
-    "low_birth_weight_babies": "Low Birth Weight Babies",
-    "diarrhea_persistent": "Persistent Diarrhoea",
-    "population": "Population",
+    "malaria_confirmed": "Malaria Cases (<5)",
+    "pneumonia_cases": "Pneumonia Cases (<5)",
+    "diarrhea": "Diarrhoea Cases (<5)",
+    "low_birth_weight_babies": "Low Birth Weight Newborns",
+    "population": "Under-5 Population",
+    "mean_temperature_missing": "Mean Temperature Missing",
+    "rainfall_missing": "Rainfall Missing",
+    "mean_relative_humidity_missing": "Relative Humidity Missing",
+    "average_gpp_missing": "Avg GPP Missing",
+    "malaria_confirmed_missing": "Malaria Cases (<5) Missing",
+    "pneumonia_cases_missing": "Pneumonia Cases (<5) Missing",
+    "diarrhea_missing": "Diarrhoea Cases (<5) Missing",
+    "low_birth_weight_babies_missing": "Low Birth Weight Newborns Missing",
+    "population_missing": "Under-5 Population Missing",
+    "mean_temperature_outlier": "Mean Temperature Outlier",
+    "rainfall_outlier": "Rainfall Outlier",
+    "mean_relative_humidity_outlier": "Relative Humidity Outlier",
+    "average_gpp_outlier": "Avg GPP Outlier",
+    "malaria_confirmed_outlier": "Malaria Cases (<5) Outlier",
+    "pneumonia_cases_outlier": "Pneumonia Cases (<5) Outlier",
+    "diarrhea_outlier": "Diarrhoea Cases (<5) Outlier",
+    "low_birth_weight_babies_outlier": "Low Birth Weight Newborns Outlier",
+    "population_outlier": "Under-5 Population Outlier",
+    "target_outlier_qc": "GAM Target Outlier QC",
+    "target_duplicate_qc": "Duplicate District-Month QC",
     "Acut_Malnutrition": "GAM Caseload (SAM + MAM)",
 }
 
@@ -190,24 +208,11 @@ _EXCLUDE_FROM_FEATURES = {
     "Operational_Alert_Why",
     "month",
     "quarter",
+    "target_outlier_qc",
+    "target_duplicate_qc",
+    "diarrhea_acute",
+    "diarrhea_persistent",
 }
-
-
-# =============================================================================
-# FIXED RISK ENCODER
-# =============================================================================
-
-class RiskLabelEncoder:
-    """Fixed-order encoder. sklearn LabelEncoder sorts alphabetically."""
-
-    classes_ = np.array(RISK_LEVELS)
-
-    def transform(self, values):
-        return np.array([RISK_ORDER[v] for v in values], dtype=int)
-
-    def inverse_transform(self, values):
-        return np.array([RISK_LEVELS[int(v)] for v in values])
-
 
 # =============================================================================
 # UTILITIES
@@ -620,23 +625,34 @@ def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, p
     for district in districts:
         d = df[df["District_Name"] == district].sort_values("Date")
         pop_missing = 0
+        duplicate_target_rows = int(d.duplicated(subset=["Date"]).sum())
+        outlier_target_rows = (
+            int(pd.to_numeric(d["target_outlier_qc"], errors="coerce").fillna(0).sum())
+            if "target_outlier_qc" in d.columns
+            else _count_iqr_outliers(d["Acut_Malnutrition"])
+        )
         if pop_col is not None and pop_col in d.columns:
-            pop_missing = int(pd.to_numeric(d[pop_col], errors="coerce").isna().sum())
+            missing_col = f"{pop_col}{MISSING_FLAG_SUFFIX}"
+            if missing_col in d.columns:
+                pop_missing = int(pd.to_numeric(d[missing_col], errors="coerce").fillna(0).sum())
+            else:
+                pop_missing = int(pd.to_numeric(d[pop_col], errors="coerce").isna().sum())
 
         district_rows.append({
             "District": district,
             "Months_Reported": int(d["Date"].nunique()),
             "Completeness_Pct": round(d["Date"].nunique() / expected_months * 100, 1) if expected_months else np.nan,
             "Zero_GAM_Months": int((pd.to_numeric(d["Acut_Malnutrition"], errors="coerce").fillna(0) == 0).sum()),
-            "Outlier_GAM_Months": _count_iqr_outliers(d["Acut_Malnutrition"]),
+            "Outlier_GAM_Months": outlier_target_rows,
+            "Duplicate_Target_Rows": duplicate_target_rows,
             "Missing_Population": pop_missing,
             "Missing_Severity": int(d["Severity_Prevalence_Pct"].isna().sum()),
             "Denominator_Source": d["Denominator_Source"].iloc[0] if "Denominator_Source" in d.columns and not d.empty else "Unavailable",
         })
 
     district_quality = pd.DataFrame(district_rows).sort_values(
-        ["Completeness_Pct", "Missing_Severity", "Outlier_GAM_Months"],
-        ascending=[True, False, False],
+        ["Completeness_Pct", "Duplicate_Target_Rows", "Missing_Severity", "Outlier_GAM_Months"],
+        ascending=[True, False, False, False],
     ).reset_index(drop=True)
 
     monthly = (
@@ -646,6 +662,8 @@ def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, p
             Total_GAM_Caseload=("Acut_Malnutrition", "sum"),
             Zero_GAM_Districts=("Acut_Malnutrition", lambda s: int((pd.to_numeric(s, errors="coerce").fillna(0) == 0).sum())),
             Missing_Severity=("Severity_Prevalence_Pct", lambda s: int(s.isna().sum())),
+            Target_Outlier_Rows=("target_outlier_qc", lambda s: int(pd.to_numeric(s, errors="coerce").fillna(0).sum())) if "target_outlier_qc" in df.columns else ("Acut_Malnutrition", lambda s: 0),
+            Duplicate_Target_Rows=("target_duplicate_qc", lambda s: int(pd.to_numeric(s, errors="coerce").fillna(0).sum())) if "target_duplicate_qc" in df.columns else ("Acut_Malnutrition", lambda s: 0),
         )
         .reset_index()
         .sort_values("Date")
@@ -778,49 +796,6 @@ def colour_alert_summary_df(df: pd.DataFrame):
         return [""] * len(row)
 
     return df.style.apply(_style_row, axis=1)
-
-
-def compute_per_class_metrics(all_true: list[int], all_pred: list[int]) -> dict:
-    conf = confusion_matrix(all_true, all_pred, labels=list(range(len(RISK_LEVELS))))
-    report = classification_report(
-        all_true,
-        all_pred,
-        labels=list(range(len(RISK_LEVELS))),
-        target_names=RISK_LEVELS,
-        output_dict=True,
-        zero_division=0,
-    )
-
-    rows = []
-    for i, lvl in enumerate(RISK_LEVELS):
-        tp = conf[i, i]
-        fp = conf[:, i].sum() - tp
-        fn = conf[i, :].sum() - tp
-        tn = conf.sum() - tp - fp - fn
-
-        sensitivity = tp / (tp + fn) if (tp + fn) else 0.0
-        specificity = tn / (tn + fp) if (tn + fp) else 0.0
-        precision = tp / (tp + fp) if (tp + fp) else 0.0
-        npv = tn / (tn + fn) if (tn + fn) else 0.0
-        lr_pos = sensitivity / (1 - specificity) if (1 - specificity) > 0 else float("inf")
-        lr_neg = (1 - sensitivity) / specificity if specificity > 0 else float("inf")
-
-        rows.append({
-            "Risk Level": lvl,
-            "Sensitivity": sensitivity,
-            "Specificity": specificity,
-            "Precision (PPV)": precision,
-            "NPV": npv,
-            "F1": report.get(lvl, {}).get("f1-score", 0.0),
-            "LR+": lr_pos,
-            "LR-": lr_neg,
-            "TP": int(tp),
-            "FP": int(fp),
-            "FN": int(fn),
-            "TN": int(tn),
-            "Support": int(report.get(lvl, {}).get("support", 0)),
-        })
-    return {"per_class": rows, "conf_matrix": conf, "report": report}
 
 
 def compute_spearman_correlations(data_slice: pd.DataFrame):
@@ -1223,13 +1198,151 @@ def load_data_from_path(path: str) -> pd.DataFrame:
     return load_data_from_df(pd.read_csv(path))
 
 
+def harmonize_diarrhea_covariate(df: pd.DataFrame) -> pd.DataFrame:
+    legacy_cols = [col for col in LEGACY_DIARRHEA_COLUMNS if col in df.columns]
+    if "diarrhea" not in df.columns and legacy_cols:
+        legacy_values = pd.concat(
+            [pd.to_numeric(df[col], errors="coerce") for col in legacy_cols],
+            axis=1,
+        )
+        df["diarrhea"] = legacy_values.sum(axis=1, min_count=1)
+    if legacy_cols:
+        df = df.drop(columns=legacy_cols)
+    return df
+
+
+def _district_month_median(df: pd.DataFrame, group_col: str, date_col: str, value_col: str) -> pd.Series:
+    return df.groupby([group_col, df[date_col].dt.month])[value_col].transform("median")
+
+
+def _district_median(df: pd.DataFrame, group_col: str, value_col: str) -> pd.Series:
+    return df.groupby(group_col)[value_col].transform("median")
+
+
+def _fill_remaining(series: pd.Series) -> pd.Series:
+    median_value = series.median(skipna=True)
+    fill_value = 0.0 if pd.isna(median_value) else float(median_value)
+    return series.fillna(fill_value)
+
+
+def sanitize_covariate_values(name: str, values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    if name in COUNT_COVARIATES:
+        return numeric.mask(numeric < 0)
+    if name == "population":
+        return numeric.mask(numeric <= 0)
+    if name == "rainfall":
+        return numeric.mask(numeric < 0)
+    if name == "mean_relative_humidity":
+        return numeric.mask((numeric < 0) | (numeric > 100))
+    if name == "average_gpp":
+        return numeric.mask(numeric < 0)
+    return numeric
+
+
+def _cap_series_with_mad(series: pd.Series, z: float = 5.0, min_obs: int = 4) -> tuple[pd.Series, pd.Series]:
+    valid = series.dropna()
+    flags = pd.Series(False, index=series.index, dtype=bool)
+    if len(valid) < min_obs:
+        return series, flags
+    median = float(valid.median())
+    mad = float((valid - median).abs().median())
+    if mad < 1e-6:
+        return series, flags
+    lower = median - z * mad
+    upper = median + z * mad
+    flags = series.notna() & ((series < lower) | (series > upper))
+    return series.clip(lower=lower, upper=upper), flags
+
+
+def cap_outliers_by_group(df: pd.DataFrame, group_col: str, value_col: str) -> tuple[pd.Series, pd.Series]:
+    capped = pd.Series(index=df.index, dtype="float64")
+    flags = pd.Series(0.0, index=df.index, dtype="float64")
+    for _, index in df.groupby(group_col).groups.items():
+        clipped, group_flags = _cap_series_with_mad(df.loc[index, value_col])
+        capped.loc[index] = clipped
+        flags.loc[index] = group_flags.astype(float)
+    return capped, flags
+
+
+def flag_outliers_by_group(df: pd.DataFrame, group_col: str, value_col: str) -> pd.Series:
+    flags = pd.Series(0.0, index=df.index, dtype="float64")
+    for _, index in df.groupby(group_col).groups.items():
+        _, group_flags = _cap_series_with_mad(df.loc[index, value_col])
+        flags.loc[index] = group_flags.astype(float)
+    return flags
+
+
+def sanitize_target_values(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    return numeric.mask(numeric < 0)
+
+
+def add_target_qc_flags(df: pd.DataFrame, group_col: str, target_col: str) -> pd.DataFrame:
+    df = df.copy()
+    df["target_duplicate_qc"] = df.duplicated(subset=[group_col, "Date"], keep=False).astype(float)
+    df["target_outlier_qc"] = flag_outliers_by_group(df, group_col, target_col)
+    return df
+
+
+def covariate_lag_feature_names(available_columns: list[str] | set[str]) -> list[str]:
+    available = set(available_columns)
+    names = []
+    for covariate in LAGGED_EXOG_COVARIATES:
+        if covariate in available:
+            names.extend(
+                [
+                    f"{covariate}_Lag2",
+                    f"{covariate}_Lag3",
+                    f"{covariate}_Roll2_Mean",
+                    f"{covariate}_Roll3_Mean",
+                ]
+            )
+    return names
+
+
+def impute_modeled_covariates(df: pd.DataFrame, group_col: str, date_col: str) -> pd.DataFrame:
+    df = df.copy()
+    present_covariates = [col for col in MODELED_COVARIATES if col in df.columns]
+
+    for col in present_covariates:
+        values = sanitize_covariate_values(col, df[col])
+        df[col] = values
+        df[f"{col}{MISSING_FLAG_SUFFIX}"] = values.isna().astype(float)
+        df[col], df[f"{col}{OUTLIER_FLAG_SUFFIX}"] = cap_outliers_by_group(df, group_col, col)
+
+    for col in [covariate for covariate in CLIMATE_COVARIATES if covariate in df.columns]:
+        df[col] = df.groupby(group_col)[col].transform(
+            lambda series: series.interpolate(method="linear", limit_direction="both")
+        )
+        df[col] = df[col].fillna(_district_month_median(df, group_col, date_col, col))
+        df[col] = df[col].fillna(_district_median(df, group_col, col))
+        df[col] = _fill_remaining(df[col])
+
+    for col in [covariate for covariate in CHILD_HEALTH_COVARIATES if covariate in df.columns]:
+        df[col] = df.groupby(group_col)[col].transform(lambda series: series.ffill(limit=1))
+        df[col] = df[col].fillna(_district_month_median(df, group_col, date_col, col))
+        df[col] = df[col].fillna(_district_median(df, group_col, col))
+        df[col] = _fill_remaining(df[col]).clip(lower=0)
+
+    for col in [covariate for covariate in SLOW_MOVING_COVARIATES if covariate in df.columns]:
+        df[col] = df.groupby(group_col)[col].transform(lambda series: series.ffill().bfill())
+        df[col] = df[col].fillna(_district_median(df, group_col, col))
+        df[col] = _fill_remaining(df[col]).clip(lower=0)
+
+    return df
+
+
 def load_data_from_df(df: pd.DataFrame) -> pd.DataFrame:
     required = ["time_period", "Acut_Malnutrition", "Region_District"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
+    df = harmonize_diarrhea_covariate(df.copy())
+
     df["Date"] = df["time_period"].apply(parse_date)
+    df["Acut_Malnutrition"] = sanitize_target_values(df["Acut_Malnutrition"])
     df = df.dropna(subset=["Date", "Acut_Malnutrition"]).copy()
 
     raw_rd = df["Region_District"].astype(str).str.strip()
@@ -1250,6 +1363,8 @@ def load_data_from_df(df: pd.DataFrame) -> pd.DataFrame:
 
     df["Display_Name"] = df["Region_Label"] + " - " + df["District_Name"]
     df = df.sort_values(["District_Name", "Date"]).reset_index(drop=True)
+    df = add_target_qc_flags(df, group_col="District_Name", target_col="Acut_Malnutrition")
+    df = impute_modeled_covariates(df, group_col="District_Name", date_col="Date")
 
     severity_setup = get_severity_setup(df)
     df["Severity_Basis"] = severity_setup["basis"]
@@ -1414,10 +1529,28 @@ def build_features(_df: pd.DataFrame):
                     if pd.api.types.is_numeric_dtype(d[col]):
                         row[col] = d.loc[i - 1, col]
 
+            for covariate in LAGGED_EXOG_COVARIATES:
+                if covariate not in d.columns:
+                    continue
+                history = d.loc[i - 3:i - 1, covariate].astype(float).to_numpy()
+                row[f"{covariate}_Lag2"] = float(history[-2])
+                row[f"{covariate}_Lag3"] = float(history[-3])
+                row[f"{covariate}_Roll2_Mean"] = float(np.mean(history[-2:]))
+                row[f"{covariate}_Roll3_Mean"] = float(np.mean(history))
+
             records.append(row)
 
-    feat_df = pd.DataFrame(records).dropna().reset_index(drop=True)
-    feat_df = apply_log_transform(feat_df, SKEWED_COVS)
+    feat_df = pd.DataFrame(records)
+    required_cols = [
+        "District",
+        "Date",
+        "Target_Adm",
+        "Target_WD_Risk",
+        "Target_XD_Risk",
+    ]
+    feat_df = feat_df.dropna(subset=[col for col in required_cols if col in feat_df.columns]).reset_index(drop=True)
+    skewed_feature_cols = SKEWED_COVS + covariate_lag_feature_names([c for c in LAGGED_EXOG_COVARIATES if c in feat_df.columns and c in CHILD_HEALTH_COVARIATES])
+    feat_df = apply_log_transform(feat_df, skewed_feature_cols)
 
     scale_cols = [
         "Lag1", "Lag2", "Lag3",
@@ -1501,29 +1634,6 @@ def wf_splits(_feat_df: pd.DataFrame, n_splits: int = 6, min_months: int = 12):
     return splits
 
 
-def make_classifier(target: str) -> RandomForestClassifier:
-    if target == "WD":
-        class_weight = {0: 0.8, 1: 2.0, 2: 3.8, 3: 5.8}
-        max_depth = 16
-        min_leaf = 1
-    else:
-        class_weight = {0: 1.0, 1: 1.5, 2: 2.6, 3: 4.0}
-        max_depth = 14
-        min_leaf = 2
-
-    return RandomForestClassifier(
-        n_estimators=700,
-        max_depth=max_depth,
-        min_samples_leaf=min_leaf,
-        min_samples_split=3,
-        max_features="sqrt",
-        class_weight=class_weight,
-        bootstrap=True,
-        random_state=42,
-        n_jobs=-1,
-    )
-
-
 def make_regressor() -> RandomForestRegressor:
     return RandomForestRegressor(
         n_estimators=700,
@@ -1534,137 +1644,6 @@ def make_regressor() -> RandomForestRegressor:
         random_state=42,
         n_jobs=-1,
     )
-
-
-def predict_with_thresholds(proba: np.ndarray, thresholds: np.ndarray) -> np.ndarray:
-    adjusted = proba / thresholds.reshape(1, -1)
-    return adjusted.argmax(axis=1)
-
-
-def tune_thresholds(y_true: np.ndarray, proba: np.ndarray, target: str) -> np.ndarray:
-    if target == "WD":
-        grids = [
-            np.linspace(0.55, 0.85, 4),
-            np.linspace(0.26, 0.52, 4),
-            np.linspace(0.12, 0.34, 5),
-            np.linspace(0.08, 0.24, 5),
-        ]
-    else:
-        grids = [
-            np.linspace(0.38, 0.62, 4),
-            np.linspace(0.24, 0.46, 4),
-            np.linspace(0.16, 0.36, 5),
-            np.linspace(0.10, 0.26, 5),
-        ]
-
-    best = (
-        np.array([0.68, 0.36, 0.22, 0.12])
-        if target == "WD"
-        else np.array([0.50, 0.34, 0.24, 0.14])
-    )
-    best_score = -np.inf
-
-    for thr_values in product(*grids):
-        thr = np.array(thr_values)
-        pred = predict_with_thresholds(proba, thr)
-        recalls = recall_score(
-            y_true,
-            pred,
-            labels=list(range(len(RISK_LEVELS))),
-            average=None,
-            zero_division=0,
-        )
-        precision_high = precision_score(
-            np.isin(y_true, [2, 3]).astype(int),
-            np.isin(pred, [2, 3]).astype(int),
-            zero_division=0,
-        )
-        if target == "WD":
-            score = (
-                0.12 * recalls[0]
-                + 0.20 * recalls[1]
-                + 0.32 * recalls[2]
-                + 0.36 * recalls[3]
-                + 0.05 * precision_high
-            )
-        else:
-            score = recalls.mean() + 0.05 * precision_high
-        if score > best_score:
-            best_score = score
-            best = thr
-    return best
-
-
-def full_proba(model, X: np.ndarray) -> np.ndarray:
-    proba = model.predict_proba(X)
-    full = np.zeros((len(X), len(RISK_LEVELS)))
-    for pos, cls in enumerate(model.classes_):
-        full[:, cls] = proba[:, pos]
-    return full
-
-
-@st.cache_data(show_spinner=False)
-def run_classification(_feat_df: pd.DataFrame, feature_cols: list[str], target: str = "WD"):
-    target_col = f"Target_{target}_Risk"
-    le = RiskLabelEncoder()
-    valid = _feat_df[_feat_df[target_col].isin(RISK_LEVELS)].copy().reset_index(drop=True)
-    valid["y"] = le.transform(valid[target_col])
-
-    X = valid[feature_cols].values
-    y = valid["y"].values
-    splits = wf_splits(valid)
-    if not splits:
-        return {"error": f"Not enough data for {target} risk classification."}
-
-    cv_acc, cv_f1, cv_bal_acc, cv_macro_recall = [], [], [], []
-    all_true, all_pred = [], []
-
-    for tr_i, te_i in splits:
-        tr_p = valid.index.get_indexer(tr_i)
-        tr_p = tr_p[tr_p >= 0]
-        te_p = valid.index.get_indexer(te_i)
-        te_p = te_p[te_p >= 0]
-        if not len(tr_p) or not len(te_p):
-            continue
-
-        model = make_classifier(target)
-        model.fit(X[tr_p], y[tr_p])
-        thresholds = tune_thresholds(y[tr_p], full_proba(model, X[tr_p]), target)
-        p = predict_with_thresholds(full_proba(model, X[te_p]), thresholds)
-
-        cv_acc.append(accuracy_score(y[te_p], p))
-        cv_f1.append(f1_score(y[te_p], p, average="weighted", zero_division=0))
-        cv_bal_acc.append(balanced_accuracy_score(y[te_p], p))
-        cv_macro_recall.append(recall_score(y[te_p], p, average="macro", zero_division=0))
-        all_true.extend(y[te_p].tolist())
-        all_pred.extend(p.tolist())
-
-    final_model = make_classifier(target)
-    final_model.fit(X, y)
-    thresholds = tune_thresholds(y, full_proba(final_model, X), target)
-
-    feat_imp = pd.DataFrame({
-        "Feature": feature_cols,
-        "Importance": final_model.feature_importances_,
-    }).sort_values("Importance", ascending=False)
-
-    pcm = compute_per_class_metrics(all_true, all_pred)
-    return {
-        "cv_acc": float(np.mean(cv_acc)),
-        "cv_acc_std": float(np.std(cv_acc)),
-        "cv_f1": float(np.mean(cv_f1)),
-        "cv_bal_acc": float(np.mean(cv_bal_acc)),
-        "cv_macro_recall": float(np.mean(cv_macro_recall)),
-        "feat_imp": feat_imp,
-        "model": final_model,
-        "thresholds": thresholds,
-        "le": le,
-        "n_folds": len(splits),
-        "target": target,
-        "per_class": pcm["per_class"],
-        "all_true": all_true,
-        "all_pred": all_pred,
-    }
 
 
 @st.cache_data(show_spinner=False)
@@ -1716,6 +1695,7 @@ def run_regression_cv(_feat_df: pd.DataFrame, feature_cols: list[str], _scalers:
     feat_imp = pd.DataFrame({
         "Feature": feature_cols,
         "Importance": final_model.feature_importances_,
+        "Display": [display_label(feature) for feature in feature_cols],
     }).sort_values("Importance", ascending=False)
     residuals = pd.DataFrame(resid_rows)
 
@@ -1766,18 +1746,6 @@ class Forecaster:
 
         self.reg = make_regressor()
         self.reg.fit(valid[feature_cols].values, valid["Target_Adm_Transformed"].values)
-
-        # Restore classifier-driven within-district anomaly prediction for forecasts.
-        self.wd_clf = None
-        self.wd_thresholds = None
-        self.wd_le = None
-        wd_valid = valid[valid["Target_WD_Risk"].isin(RISK_LEVELS)].copy()
-        if not wd_valid.empty:
-            self.wd_le = RiskLabelEncoder()
-            wd_y = self.wd_le.transform(wd_valid["Target_WD_Risk"])
-            self.wd_clf = make_classifier("WD")
-            self.wd_clf.fit(wd_valid[feature_cols].values, wd_y)
-            self.wd_thresholds = tune_thresholds(wd_y, full_proba(self.wd_clf, wd_valid[feature_cols].values), "WD")
         return self
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1798,6 +1766,11 @@ class Forecaster:
             hist_adm = list(d["Acut_Malnutrition"].astype(float).values)
             hist_wd = list(d["wd_score"].values)
             hist_xd = list(d["xd_score"].values)
+            covariate_histories = {
+                covariate: list(d[covariate].astype(float).values)
+                for covariate in LAGGED_EXOG_COVARIATES
+                if covariate in d.columns
+            }
             last_date = d["Date"].iloc[-1]
             extras = self.extra_vals.get(district, {c: 0.0 for c in self.extra})
             total_pop_col = severity_setup["population_col"]
@@ -1847,8 +1820,17 @@ class Forecaster:
                     "WD_Score_Lag": hist_wd[-1],
                     "XD_Score_Lag": hist_xd[-1],
                 }
+                dynamic_extras = extras.copy()
+                for covariate, history in covariate_histories.items():
+                    if not history:
+                        continue
+                    dynamic_extras[covariate] = float(history[-1])
+                    dynamic_extras[f"{covariate}_Lag2"] = float(history[-2] if len(history) >= 2 else history[-1])
+                    dynamic_extras[f"{covariate}_Lag3"] = float(history[-3] if len(history) >= 3 else history[-1])
+                    dynamic_extras[f"{covariate}_Roll2_Mean"] = float(np.mean(history[-2:])) if len(history) >= 2 else float(history[-1])
+                    dynamic_extras[f"{covariate}_Roll3_Mean"] = float(np.mean(history[-3:])) if len(history) >= 3 else float(np.mean(history))
 
-                fv = np.array([[{**base_raw, **extras}.get(c, 0.0) for c in self.feature_cols]])
+                fv = np.array([[{**base_raw, **dynamic_extras}.get(c, 0.0) for c in self.feature_cols]])
                 pred_transformed = float(self.reg.predict(fv)[0])
                 pred_raw = round(inverse_regression_target(pred_transformed, scaler))
 
@@ -1859,11 +1841,7 @@ class Forecaster:
                 hi = max(lo, round(hi))
 
                 p50 = np.percentile(hist, 50)
-                if self.wd_clf is not None and self.wd_thresholds is not None and self.wd_le is not None:
-                    wd_code = int(predict_with_thresholds(full_proba(self.wd_clf, fv), self.wd_thresholds)[0])
-                    wd_risk = self.wd_le.inverse_transform([wd_code])[0]
-                else:
-                    wd_risk = classify_risk(pred_raw, p50, p75, p90, p95)
+                wd_risk = classify_risk(pred_raw, p50, p75, p90, p95)
                 pred_rate = pred_raw / total_pop * 100000 if pd.notna(total_pop) and total_pop > 0 else np.nan
                 lower_severity_phase = "No Data"
                 severity_phase = "No Data"
@@ -1890,6 +1868,8 @@ class Forecaster:
                 hist_adm.append(pred_raw)
                 hist_wd.append(RISK_ORDER.get(wd_risk, 0))
                 hist_xd.append(0)
+                for covariate, history in covariate_histories.items():
+                    history.append(float(history[-1]))
 
         result = pd.DataFrame(rows)
         if result.empty:
@@ -2146,15 +2126,11 @@ def main():
     ):
         with st.spinner("Training Random Forest models and generating 3-month forecasts..."):
             st.session_state["reg_eval"] = run_regression_cv(feat_df, feature_cols, scalers)
-            st.session_state["clf_wd"] = run_classification(feat_df, feature_cols, target="WD")
-            st.session_state["clf_xd"] = run_classification(feat_df, feature_cols, target="XD")
             st.session_state["fc_df"] = run_forecast(feat_df, feature_cols, scalers, df, data_key)
             st.session_state["_data_key"] = data_key
             st.session_state["_model_schema_version"] = MODEL_SCHEMA_VERSION
 
     reg_eval = st.session_state["reg_eval"]
-    clf_wd = st.session_state["clf_wd"]
-    clf_xd = st.session_state["clf_xd"]
     fc_df = ensure_forecast_alert_columns(st.session_state["fc_df"])
     st.session_state["fc_df"] = fc_df
 
@@ -2188,12 +2164,8 @@ def main():
 
     if use_all_districts:
         scoped_reg_eval = reg_eval
-        scoped_clf_wd = clf_wd
-        scoped_clf_xd = clf_xd
     else:
         scoped_reg_eval = run_regression_cv(view_feat_df, feature_cols, scalers)
-        scoped_clf_wd = run_classification(view_feat_df, feature_cols, target="WD")
-        scoped_clf_xd = run_classification(view_feat_df, feature_cols, target="XD")
 
     st.success(
         f"{len(view_df):,} records | {view_df['District_Name'].nunique()} districts | "
@@ -2665,50 +2637,12 @@ def main():
                         fig_fi = px.bar(
                             scoped_reg_eval["feat_imp"].head(15),
                             x="Importance",
-                            y="Feature",
+                            y="Display",
                             orientation="h",
                             title=f"Top Features - Regression ({scope_label})",
                         )
                         fig_fi.update_layout(yaxis=dict(autorange="reversed"), height=430)
                         st.plotly_chart(fig_fi, use_container_width=True)
-
-        with st.expander("Classification: Anomaly Sensitivity", expanded=True):
-            tabs = st.tabs(["Within-District Anomaly", "Between-Districts Anomaly"])
-            for tab, clf, label in [(tabs[0], scoped_clf_wd, "Within-District Anomaly"), (tabs[1], scoped_clf_xd, "Between-Districts Anomaly")]:
-                with tab:
-                    if "error" in clf:
-                        st.warning(clf["error"])
-                        continue
-                    if not use_all_districts:
-                        st.caption(f"Metrics filtered to: {', '.join(active_display_districts)}")
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Accuracy", f"{clf['cv_acc'] * 100:.1f}%")
-                    c2.metric("Balanced Accuracy", f"{clf['cv_bal_acc'] * 100:.1f}%")
-                    c3.metric("Macro Recall", f"{clf['cv_macro_recall'] * 100:.1f}%")
-                    c4.metric("Weighted F1", f"{clf['cv_f1']:.3f}")
-
-                    pc = pd.DataFrame(clf["per_class"])
-                    show = pc.copy()
-                    for col in ["Sensitivity", "Specificity", "Precision (PPV)", "NPV", "F1"]:
-                        show[col] = show[col].apply(lambda v: f"{v * 100:.1f}%")
-                    st.dataframe(show, use_container_width=True, hide_index=True)
-
-                    st.download_button(
-                        f"Download {label} metrics CSV",
-                        pc.to_csv(index=False),
-                        f"{label.lower().replace('-', '_')}_metrics.csv",
-                    )
-
-                    fig_fi = px.bar(
-                        clf["feat_imp"].head(15),
-                        x="Importance",
-                        y="Feature",
-                        orientation="h",
-                        title=f"Top Features - {label}",
-                    )
-                    fig_fi.update_layout(yaxis=dict(autorange="reversed"), height=430)
-                    st.plotly_chart(fig_fi, use_container_width=True)
-
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,5 @@
 import argparse
+import os
 import pickle
 from pathlib import Path
 
@@ -7,29 +8,50 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 
 
-MODEL_VERSION = "chap-rf-v1"
+MODEL_VERSION = "chap-rf-v6"
+RISK_LEVELS = ["Low", "Moderate", "High", "Extreme"]
+RISK_ORDER = {
+    "Low": 0,
+    "Moderate": 1,
+    "High": 2,
+    "Extreme": 3,
+}
+LEGACY_DIARRHEA_COVARIATES = ("diarrhea_acute", "diarrhea_persistent")
+CLIMATE_COVARIATES = [
+    "mean_temperature",
+    "rainfall",
+    "mean_relative_humidity",
+    "average_gpp",
+]
+CHILD_HEALTH_COVARIATES = [
+    "malaria_confirmed",
+    "pneumonia_cases",
+    "diarrhea",
+    "low_birth_weight_babies",
+]
+SLOW_MOVING_COVARIATES = ["population"]
 DEFAULT_COVARIATES = [
+    *CLIMATE_COVARIATES,
+    *CHILD_HEALTH_COVARIATES,
+    *SLOW_MOVING_COVARIATES,
+]
+SKEWED_COVARIATES = {
+    *CHILD_HEALTH_COVARIATES,
+    *SLOW_MOVING_COVARIATES,
+}
+MISSING_FLAG_SUFFIX = "_missing"
+OUTLIER_FLAG_SUFFIX = "_outlier"
+COUNT_COVARIATES = CHILD_HEALTH_COVARIATES
+LAGGED_EXOG_COVARIATES = [
     "mean_temperature",
     "rainfall",
     "mean_relative_humidity",
     "average_gpp",
     "malaria_confirmed",
     "pneumonia_cases",
-    "pregnant_women_with_Anaemia",
-    "diarrhea_acute",
+    "diarrhea",
     "low_birth_weight_babies",
-    "diarrhea_persistent",
-    "population",
 ]
-SKEWED_COVARIATES = {
-    "malaria_confirmed",
-    "pneumonia_cases",
-    "pregnant_women_with_Anaemia",
-    "diarrhea_acute",
-    "low_birth_weight_babies",
-    "diarrhea_persistent",
-    "population",
-}
 BASE_FEATURES = [
     "Month",
     "Quarter",
@@ -76,12 +98,212 @@ def parse_time_period(value: str) -> pd.Timestamp:
     return pd.to_datetime(value, errors="coerce")
 
 
+def classify_risk(value: float, p50: float, p75: float, p90: float, p95: float) -> str:
+    if pd.isna(value):
+        return "No Data"
+    if value < p75:
+        return "Low"
+    if value < p90:
+        return "Moderate"
+    if value < p95:
+        return "High"
+    return "Extreme"
+
+
+def derive_operational_alert(
+    wd_risk: str,
+    xd_risk: str,
+    severity_phase: str = "No Data",
+    lower_severity_phase: str = "No Data",
+) -> str:
+    if wd_risk not in RISK_LEVELS or xd_risk not in RISK_LEVELS:
+        return "No Data"
+    if wd_risk == "Low" and xd_risk in {"Low", "Moderate"}:
+        return "Monitor"
+    if (
+        (wd_risk == "Low" and xd_risk in {"High", "Extreme"})
+        or (wd_risk == "Moderate" and xd_risk in {"Low", "Moderate"})
+    ):
+        return "Alert"
+    if wd_risk in {"High", "Extreme"} or (wd_risk == "Moderate" and xd_risk in {"High", "Extreme"}):
+        return "Respond"
+    return "No Data"
+
+
+def explain_operational_alert(
+    wd_risk: str,
+    xd_risk: str,
+    severity_phase: str = "No Data",
+    lower_severity_phase: str = "No Data",
+) -> str:
+    alert = derive_operational_alert(wd_risk, xd_risk, severity_phase, lower_severity_phase)
+    if alert == "Monitor":
+        return f"Monitor because within-district anomaly is {wd_risk} and between-districts anomaly is {xd_risk}."
+    if alert == "Alert":
+        return f"Alert because within-district anomaly is {wd_risk} and between-districts anomaly is {xd_risk}."
+    if alert == "Respond":
+        return f"Respond because within-district anomaly is {wd_risk} and between-districts anomaly is {xd_risk}."
+    return "Operational alert unavailable because one or both anomaly classifications are missing."
+
+
+def env_flag_true(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def log_transform_covariate(name: str, values: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(values, errors="coerce")
     if name in SKEWED_COVARIATES:
         clipped = numeric.clip(lower=0)
         return np.log1p(clipped)
     return numeric
+
+
+def _location_month_median(df: pd.DataFrame, value_col: str) -> pd.Series:
+    return df.groupby(["location", df["Date"].dt.month])[value_col].transform("median")
+
+
+def _location_median(df: pd.DataFrame, value_col: str) -> pd.Series:
+    return df.groupby("location")[value_col].transform("median")
+
+
+def _fill_remaining(series: pd.Series) -> pd.Series:
+    median_value = series.median(skipna=True)
+    fill_value = 0.0 if pd.isna(median_value) else float(median_value)
+    return series.fillna(fill_value)
+
+
+def sanitize_covariate_values(name: str, values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    if name in COUNT_COVARIATES:
+        return numeric.mask(numeric < 0)
+    if name == "population":
+        return numeric.mask(numeric <= 0)
+    if name == "rainfall":
+        return numeric.mask(numeric < 0)
+    if name == "mean_relative_humidity":
+        return numeric.mask((numeric < 0) | (numeric > 100))
+    if name == "average_gpp":
+        return numeric.mask(numeric < 0)
+    return numeric
+
+
+def _cap_series_with_mad(series: pd.Series, z: float = 5.0, min_obs: int = 4) -> tuple[pd.Series, pd.Series]:
+    valid = series.dropna()
+    flags = pd.Series(False, index=series.index, dtype=bool)
+    if len(valid) < min_obs:
+        return series, flags
+    median = float(valid.median())
+    mad = float((valid - median).abs().median())
+    if mad < 1e-6:
+        return series, flags
+    lower = median - z * mad
+    upper = median + z * mad
+    flags = series.notna() & ((series < lower) | (series > upper))
+    return series.clip(lower=lower, upper=upper), flags
+
+
+def cap_outliers_by_group(df: pd.DataFrame, group_col: str, value_col: str) -> tuple[pd.Series, pd.Series]:
+    capped = pd.Series(index=df.index, dtype="float64")
+    flags = pd.Series(0.0, index=df.index, dtype="float64")
+    for _, index in df.groupby(group_col).groups.items():
+        clipped, group_flags = _cap_series_with_mad(df.loc[index, value_col])
+        capped.loc[index] = clipped
+        flags.loc[index] = group_flags.astype(float)
+    return capped, flags
+
+
+def flag_outliers_by_group(df: pd.DataFrame, group_col: str, value_col: str) -> pd.Series:
+    flags = pd.Series(0.0, index=df.index, dtype="float64")
+    for _, index in df.groupby(group_col).groups.items():
+        _, group_flags = _cap_series_with_mad(df.loc[index, value_col])
+        flags.loc[index] = group_flags.astype(float)
+    return flags
+
+
+def sanitize_target_values(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    return numeric.mask(numeric < 0)
+
+
+def add_target_qc_flags(df: pd.DataFrame, group_col: str, target_col: str) -> pd.DataFrame:
+    df = df.copy()
+    df["target_duplicate_qc"] = df.duplicated(subset=[group_col, "Date"], keep=False).astype(float)
+    df["target_outlier_qc"] = flag_outliers_by_group(df, group_col, target_col)
+    return df
+
+
+def covariate_lag_feature_names(available_columns: list[str] | set[str]) -> list[str]:
+    available = set(available_columns)
+    names = []
+    for covariate in LAGGED_EXOG_COVARIATES:
+        if covariate in available:
+            names.extend(
+                [
+                    f"{covariate}_Lag2",
+                    f"{covariate}_Lag3",
+                    f"{covariate}_Roll2_Mean",
+                    f"{covariate}_Roll3_Mean",
+                ]
+            )
+    return names
+
+
+def impute_modeled_covariates(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    present_covariates = [col for col in DEFAULT_COVARIATES if col in df.columns]
+
+    for col in present_covariates:
+        values = sanitize_covariate_values(col, df[col])
+        df[col] = values
+        df[f"{col}{MISSING_FLAG_SUFFIX}"] = values.isna().astype(float)
+        df[col], df[f"{col}{OUTLIER_FLAG_SUFFIX}"] = cap_outliers_by_group(df, "location", col)
+
+    for col in [covariate for covariate in CLIMATE_COVARIATES if covariate in df.columns]:
+        df[col] = df.groupby("location")[col].transform(
+            lambda series: series.interpolate(method="linear", limit_direction="both")
+        )
+        df[col] = df[col].fillna(_location_month_median(df, col))
+        df[col] = df[col].fillna(_location_median(df, col))
+        df[col] = _fill_remaining(df[col])
+
+    for col in [covariate for covariate in CHILD_HEALTH_COVARIATES if covariate in df.columns]:
+        df[col] = df.groupby("location")[col].transform(lambda series: series.ffill(limit=1))
+        df[col] = df[col].fillna(_location_month_median(df, col))
+        df[col] = df[col].fillna(_location_median(df, col))
+        df[col] = _fill_remaining(df[col]).clip(lower=0)
+
+    for col in [covariate for covariate in SLOW_MOVING_COVARIATES if covariate in df.columns]:
+        df[col] = df.groupby("location")[col].transform(lambda series: series.ffill().bfill())
+        df[col] = df[col].fillna(_location_median(df, col))
+        df[col] = _fill_remaining(df[col]).clip(lower=0)
+
+    return df
+
+
+def resolve_covariate_series(df: pd.DataFrame, covariate: str) -> pd.Series | None:
+    if covariate == "diarrhea":
+        source = pick_column(df, [covariate])
+        if source is not None:
+            return pd.to_numeric(df[source], errors="coerce")
+
+        legacy_sources = [
+            pick_column(df, [legacy_covariate])
+            for legacy_covariate in LEGACY_DIARRHEA_COVARIATES
+        ]
+        legacy_sources = [source_name for source_name in legacy_sources if source_name is not None]
+        if not legacy_sources:
+            return None
+
+        legacy_values = pd.concat(
+            [pd.to_numeric(df[source_name], errors="coerce") for source_name in legacy_sources],
+            axis=1,
+        )
+        return legacy_values.sum(axis=1, min_count=1)
+
+    source = pick_column(df, [covariate])
+    if source is None:
+        return None
+    return pd.to_numeric(df[source], errors="coerce")
 
 
 def pick_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -122,7 +344,7 @@ def normalize_dataframe(df: pd.DataFrame, require_target: bool) -> pd.DataFrame:
     norm = norm.dropna(subset=["Date"]).copy()
 
     if target_col is not None:
-        norm["disease_cases"] = pd.to_numeric(df.loc[norm.index, target_col], errors="coerce")
+        norm["disease_cases"] = sanitize_target_values(df.loc[norm.index, target_col])
     elif require_target:
         raise ValueError("Observed inputs must include disease_cases.")
     else:
@@ -130,20 +352,35 @@ def normalize_dataframe(df: pd.DataFrame, require_target: bool) -> pd.DataFrame:
 
     covariates = []
     for covariate in DEFAULT_COVARIATES:
-        source = pick_column(df, [covariate])
-        if source is None:
+        values = resolve_covariate_series(df, covariate)
+        if values is None:
             continue
-        norm[covariate] = log_transform_covariate(covariate, df.loc[norm.index, source])
+        norm[covariate] = pd.to_numeric(values.loc[norm.index], errors="coerce")
         covariates.append(covariate)
 
     norm = norm.sort_values(["location", "Date"]).reset_index(drop=True)
+    norm = add_target_qc_flags(norm, group_col="location", target_col="disease_cases")
+    norm = impute_modeled_covariates(norm)
+    for covariate in covariates:
+        norm[covariate] = log_transform_covariate(covariate, norm[covariate])
     if require_target:
         norm = norm.dropna(subset=["disease_cases"]).copy()
     return norm
 
 
 def infer_covariate_columns(df: pd.DataFrame) -> list[str]:
-    return [column for column in DEFAULT_COVARIATES if column in df.columns]
+    covariates = [column for column in DEFAULT_COVARIATES if column in df.columns]
+    flags = [
+        f"{column}{MISSING_FLAG_SUFFIX}"
+        for column in DEFAULT_COVARIATES
+        if f"{column}{MISSING_FLAG_SUFFIX}" in df.columns
+    ]
+    outlier_flags = [
+        f"{column}{OUTLIER_FLAG_SUFFIX}"
+        for column in DEFAULT_COVARIATES
+        if f"{column}{OUTLIER_FLAG_SUFFIX}" in df.columns
+    ]
+    return covariates + flags + outlier_flags
 
 
 def transform_target(values: pd.Series | np.ndarray) -> pd.Series | np.ndarray:
@@ -157,6 +394,7 @@ def inverse_target(values: float | np.ndarray, scaler: dict) -> float | np.ndarr
 def build_training_features(df: pd.DataFrame, covariate_cols: list[str]) -> tuple[pd.DataFrame, list[str], dict]:
     rows = []
     scalers = {}
+    derived_covariate_features = covariate_lag_feature_names(covariate_cols)
 
     for location in df["location"].unique():
         location_df = df[df["location"] == location].sort_values("Date").reset_index(drop=True)
@@ -222,7 +460,15 @@ def build_training_features(df: pd.DataFrame, covariate_cols: list[str]) -> tupl
                 "Target_Transformed": float((target_log[i - 3] - target_mean) / target_std),
             }
             for covariate in covariate_cols:
-                row[covariate] = float(location_df.loc[i, covariate]) if pd.notna(location_df.loc[i, covariate]) else 0.0
+                row[covariate] = float(location_df.loc[i - 1, covariate])
+            for covariate in LAGGED_EXOG_COVARIATES:
+                if covariate not in location_df.columns:
+                    continue
+                history = location_df.loc[i - 3:i - 1, covariate].astype(float).to_numpy()
+                row[f"{covariate}_Lag2"] = float(history[-2])
+                row[f"{covariate}_Lag3"] = float(history[-3])
+                row[f"{covariate}_Roll2_Mean"] = float(np.mean(history[-2:]))
+                row[f"{covariate}_Roll3_Mean"] = float(np.mean(history))
             rows.append(row)
 
     feature_df = pd.DataFrame(rows)
@@ -236,7 +482,7 @@ def build_training_features(df: pd.DataFrame, covariate_cols: list[str]) -> tupl
                 feature_df.loc[mask, feature] - scaler["feature_mean"]
             ) / scaler["feature_std"]
 
-    feature_cols = BASE_FEATURES + covariate_cols
+    feature_cols = BASE_FEATURES + covariate_cols + derived_covariate_features
     return feature_df, feature_cols, scalers
 
 
@@ -305,12 +551,15 @@ def build_prediction_rows(
     historic_df: pd.DataFrame,
     future_df: pd.DataFrame,
     model_artifact: dict,
+    include_risk_output: bool = False,
 ) -> pd.DataFrame:
     model = model_artifact["model"]
     covariate_cols = model_artifact["covariate_cols"]
     feature_cols = model_artifact["feature_cols"]
     scalers = model_artifact["scalers"]
     rows = []
+    derived_covariate_features = covariate_lag_feature_names(covariate_cols)
+    all_hist_vals = historic_df["disease_cases"].dropna().to_numpy(dtype=float)
 
     locations = sorted(set(future_df["location"]))
     for location in locations:
@@ -324,6 +573,11 @@ def build_prediction_rows(
 
         hist_cases = location_hist["disease_cases"].astype(float).tolist()
         known_covariates = last_known_covariates(location_hist, covariate_cols)
+        covariate_histories = {
+            covariate: list(location_hist[covariate].astype(float).values)
+            for covariate in covariate_cols
+            if covariate in location_hist.columns
+        }
 
         for i in range(len(location_future)):
             future_row = location_future.iloc[i]
@@ -333,7 +587,7 @@ def build_prediction_rows(
             roll6 = hist[-6:] if len(hist) >= 6 else hist
             hist_mean = float(np.mean(hist))
             hist_std = float(np.std(hist)) if np.std(hist) > 1e-6 else 1.0
-            hist_p90, hist_p95 = np.percentile(hist, [90, 95])
+            hist_p50, hist_p75, hist_p90, hist_p95 = np.percentile(hist, [50, 75, 90, 95])
 
             month_history = pd.Series(hist_cases[:-1] if len(hist_cases) > 1 else hist_cases)
             if len(location_hist) + i > 0:
@@ -368,13 +622,19 @@ def build_prediction_rows(
                 "Lag1_Ratio_P95": float(hist[-1] / (hist_p95 + 1e-6)),
             }
             for covariate in covariate_cols:
-                value = future_row.get(covariate, np.nan)
-                if pd.isna(value):
-                    value = known_covariates.get(covariate, 0.0)
+                history = covariate_histories.get(covariate, [])
+                if history:
+                    feature_row[covariate] = float(history[-1])
                 else:
-                    value = float(value)
-                    known_covariates[covariate] = value
-                feature_row[covariate] = value
+                    feature_row[covariate] = float(known_covariates.get(covariate, 0.0))
+            for covariate in LAGGED_EXOG_COVARIATES:
+                history = covariate_histories.get(covariate, [])
+                if not history:
+                    continue
+                feature_row[f"{covariate}_Lag2"] = float(history[-2] if len(history) >= 2 else history[-1])
+                feature_row[f"{covariate}_Lag3"] = float(history[-3] if len(history) >= 3 else history[-1])
+                feature_row[f"{covariate}_Roll2_Mean"] = float(np.mean(history[-2:])) if len(history) >= 2 else float(history[-1])
+                feature_row[f"{covariate}_Roll3_Mean"] = float(np.mean(history[-3:])) if len(history) >= 3 else float(np.mean(history))
 
             scaled_row = scale_feature_row(feature_row, scaler)
             feature_vector = np.array([[scaled_row[column] for column in feature_cols]], dtype=float)
@@ -382,19 +642,70 @@ def build_prediction_rows(
             point_forecast = float(np.mean(samples))
             hist_cases.append(point_forecast)
 
+            for covariate in covariate_cols:
+                value = future_row.get(covariate, np.nan)
+                if pd.isna(value):
+                    history = covariate_histories.get(covariate, [])
+                    next_value = history[-1] if history else float(known_covariates.get(covariate, 0.0))
+                else:
+                    next_value = float(value)
+                    known_covariates[covariate] = next_value
+                covariate_histories.setdefault(covariate, []).append(next_value)
+
             row = {
                 "time_period": str(future_row["time_period"]),
                 "location": location,
             }
             row.update({f"sample_{index}": float(samples[index]) for index in range(len(samples))})
+            if include_risk_output:
+                wd_risk = classify_risk(point_forecast, hist_p50, hist_p75, hist_p90, hist_p95)
+                row.update(
+                    {
+                        "point_forecast": point_forecast,
+                        "wd_risk": wd_risk,
+                        "xd_risk": "No Data",
+                        "Operational_Alert": "No Data",
+                        "Operational_Alert_Why": "",
+                        "Composite_Risk": "No Data",
+                    }
+                )
             rows.append(row)
 
     if not rows:
         raise ValueError("No predictions were generated. Check that future locations exist in the historic/training data and each has at least 3 observations.")
-    return pd.DataFrame(rows)
+    predictions = pd.DataFrame(rows)
+    if not include_risk_output or predictions.empty:
+        return predictions
+
+    for time_period in predictions["time_period"].unique():
+        mask = predictions["time_period"] == time_period
+        point_forecasts = predictions.loc[mask, "point_forecast"].to_numpy(dtype=float)
+        if len(point_forecasts) >= 3:
+            xd_p50, xd_p75, xd_p90, xd_p95 = np.percentile(point_forecasts, [50, 75, 90, 95])
+        else:
+            xd_p50, xd_p75, xd_p90, xd_p95 = np.percentile(all_hist_vals, [50, 75, 90, 95])
+        for idx in predictions[mask].index:
+            point_forecast = float(predictions.loc[idx, "point_forecast"])
+            xd_risk = classify_risk(point_forecast, xd_p50, xd_p75, xd_p90, xd_p95)
+            wd_risk = str(predictions.loc[idx, "wd_risk"])
+            operational_alert = derive_operational_alert(wd_risk, xd_risk)
+            predictions.loc[idx, "xd_risk"] = xd_risk
+            predictions.loc[idx, "Operational_Alert"] = operational_alert
+            predictions.loc[idx, "Operational_Alert_Why"] = explain_operational_alert(wd_risk, xd_risk)
+            predictions.loc[idx, "Composite_Risk"] = operational_alert
+
+    return predictions
 
 
-def predict_model(model_path: str, historic_data_path: str, future_data_path: str, output_path: str) -> None:
+def predict_model(
+    model_path: str,
+    historic_data_path: str,
+    future_data_path: str,
+    output_path: str,
+    include_risk_output: bool | None = None,
+) -> None:
+    if include_risk_output is None:
+        include_risk_output = env_flag_true("CHAP_INCLUDE_RISK_OUTPUT")
     with open(model_path, "rb") as file_obj:
         artifact = pickle.load(file_obj)
 
@@ -403,9 +714,19 @@ def predict_model(model_path: str, historic_data_path: str, future_data_path: st
 
     for covariate in artifact["covariate_cols"]:
         if covariate not in future_df.columns:
-            future_df[covariate] = np.nan
+            if covariate.endswith(MISSING_FLAG_SUFFIX):
+                future_df[covariate] = 1.0
+            elif covariate.endswith(OUTLIER_FLAG_SUFFIX):
+                future_df[covariate] = 0.0
+            else:
+                future_df[covariate] = np.nan
 
-    predictions = build_prediction_rows(historic_df, future_df, artifact)
+    predictions = build_prediction_rows(
+        historic_df,
+        future_df,
+        artifact,
+        include_risk_output=include_risk_output,
+    )
     predictions.to_csv(output_path, index=False)
 
 
@@ -422,6 +743,11 @@ def build_parser() -> argparse.ArgumentParser:
     predict_parser.add_argument("historic_data")
     predict_parser.add_argument("future_data")
     predict_parser.add_argument("out_file")
+    predict_parser.add_argument(
+        "--include-risk-output",
+        action="store_true",
+        help="Append point forecast, risk labels, and operational alert columns to the CHAP prediction output.",
+    )
     return parser
 
 
@@ -436,7 +762,13 @@ def main() -> None:
 
     if args.command == "predict":
         Path(args.out_file).parent.mkdir(parents=True, exist_ok=True)
-        predict_model(args.model, args.historic_data, args.future_data, args.out_file)
+        predict_model(
+            args.model,
+            args.historic_data,
+            args.future_data,
+            args.out_file,
+            include_risk_output=args.include_risk_output,
+        )
         return
 
     raise ValueError(f"Unsupported command: {args.command}")

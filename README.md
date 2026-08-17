@@ -18,7 +18,7 @@ The README has been updated to reflect the current app behavior. The tool now us
 - district filtering across the full app
 - observed and forecast map views for anomalies and operational alerts
 - built-in data quality summaries for districts and months
-- classification and regression model checks inside the app
+- regression model checks inside the app
 - optional IPC AMN severity labeling when direct GAM prevalence columns are available
 
 ## Core Capabilities
@@ -77,11 +77,13 @@ The application follows this workflow:
 2. Parse dates and standardize district labels.
 3. Calculate within-district anomalies from each district's own historical distribution.
 4. Calculate between-district anomalies from peer district and seasonal patterns.
-5. Engineer lagged, rolling, trend, seasonal, and district-relative features.
-6. Train Random Forest models for regression and anomaly classification.
-7. Generate 3-month recursive district forecasts.
-8. Convert forecast outputs into anomaly labels and operational alerts.
-9. Visualize current conditions, historical patterns, drivers, forecasts, and model checks.
+5. Harmonize diarrhea inputs, sanitize impossible values, cap extreme modeled covariates, and create missingness and outlier indicator features.
+6. Apply target QC flags for suspicious GAM spikes or duplicate district-month rows.
+7. Engineer lagged, rolling, trend, seasonal, and district-relative features.
+8. Train Random Forest models for regression and anomaly classification.
+9. Generate 3-month recursive district forecasts.
+10. Convert forecast outputs into anomaly labels and operational alerts.
+11. Visualize current conditions, historical patterns, drivers, forecasts, and model checks.
 
 ## App Sections
 
@@ -160,18 +162,45 @@ Optional covariates supported by the model:
 - `rainfall`
 - `mean_relative_humidity`
 - `average_gpp`
-- `malaria_confirmed`
-- `pneumonia_cases`
-- `pregnant_women_with_Anaemia`
-- `diarrhea_acute`
-- `low_birth_weight_babies`
-- `diarrhea_persistent`
-- `population`
+- `malaria_confirmed` for malaria cases among children under 5
+- `pneumonia_cases` for pneumonia cases among children under 5
+- `diarrhea` for diarrhoea cases among children under 5
+- `low_birth_weight_babies` for low birth weight newborns
+- `population` for the district under-5 population
 
-For compatibility with the existing Streamlit dataset, the wrapper also accepts:
+For this project, the non-climate child-health covariates are interpreted as children under 5 years of age. In practice this means:
+
+- `malaria_confirmed`, `pneumonia_cases`, and `diarrhea` are under-5 case counts
+- `population` is the under-5 population denominator
+- `low_birth_weight_babies` remains a neonatal indicator used as an input covariate
+
+For backward compatibility with older datasets, the wrapper also accepts:
 
 - `Region_District` as a fallback for `location`
 - `Acut_Malnutrition` as a fallback for `disease_cases`
+- legacy `diarrhea_acute` and `diarrhea_persistent`, which are combined into `diarrhea`
+
+### Missing covariate handling
+
+The CHAP and Streamlit pipelines now use the same rule-based missing-data workflow for modeled covariates:
+
+- GAM target values are not imputed for training
+- climate covariates are interpolated within district/location, then filled from district/location-month medians, then district/location medians
+- child-health covariates use a 1-month forward fill, then district/location-month medians, then district/location medians
+- `population` uses within-district/location forward fill and back fill before median fallback
+- each modeled covariate also generates a companion `*_missing` feature so the model can learn whether the original value was observed or imputed
+
+For CHAP prediction inputs, if a future covariate column is omitted entirely, the model treats it as missing rather than forcing it to zero.
+
+### Outlier and target handling
+
+Modeled covariates and GAM targets are handled differently:
+
+- impossible covariate values are converted to missing before preprocessing, for example negative child-health counts, non-positive `population`, negative `rainfall`, negative `average_gpp`, or humidity outside `0-100`
+- extreme modeled covariates are capped within district/location using a robust median plus/minus `5 * MAD` rule, and each modeled covariate also gets a companion `*_outlier` indicator
+- GAM targets are not winsorized by default, because true spikes may be the signal of interest
+- impossible GAM target values such as negative caseloads are converted to missing and excluded from training
+- GAM target QC is tracked with `target_outlier_qc` and `target_duplicate_qc` flags so suspicious spikes or duplicate district-month observations can be reviewed without flattening the target series
 
 ### Output schema
 
@@ -183,6 +212,22 @@ The `predict` entrypoint writes a CHAP-compatible CSV with:
 
 Each `sample_*` column is one forecast draw derived from the fitted random forest, which allows CHAP to calculate uncertainty intervals.
 
+Optional enriched CHAP output is also available when needed for downstream testing:
+
+- set `CHAP_INCLUDE_RISK_OUTPUT=1` when using `predict.py`; or
+- run `python chap_model.py predict ... --include-risk-output`
+
+When enabled, the prediction CSV appends:
+
+- `point_forecast`
+- `wd_risk`
+- `xd_risk`
+- `Operational_Alert`
+- `Operational_Alert_Why`
+- `Composite_Risk`
+
+This keeps the default CHAP sample output unchanged while allowing risk-label and operational-alert testing in environments that can tolerate extra columns.
+
 ### Local smoke-test example
 
 Once dependencies are installed, the CHAP path can be exercised locally with:
@@ -190,6 +235,7 @@ Once dependencies are installed, the CHAP path can be exercised locally with:
 ```bash
 python train.py /path/to/train.csv /tmp/model.pkl
 python predict.py /tmp/model.pkl /path/to/historic.csv /path/to/future.csv /tmp/predictions.csv
+CHAP_INCLUDE_RISK_OUTPUT=1 python predict.py /tmp/model.pkl /path/to/historic.csv /path/to/future.csv /tmp/predictions_with_risk.csv
 ```
 
 ## Installation
@@ -257,13 +303,13 @@ When a GeoJSON is provided, the app asks you to select the district name column 
 | `rainfall` | Rainfall |
 | `mean_relative_humidity` | Relative humidity |
 | `average_gpp` | Vegetation productivity |
-| `malaria_confirmed` | Confirmed malaria cases |
-| `pneumonia_cases` | Pneumonia cases |
-| `pregnant_women_with_Anaemia` | Anaemia cases among pregnant women |
-| `diarrhea_acute` | Acute diarrhoea cases |
-| `low_birth_weight_babies` | Low birth weight babies |
-| `diarrhea_persistent` | Persistent diarrhoea cases |
-| `population` | District population |
+| `malaria_confirmed` | Malaria cases among children under 5 |
+| `pneumonia_cases` | Pneumonia cases among children under 5 |
+| `diarrhea` | Diarrhoea cases among children under 5 |
+| `low_birth_weight_babies` | Low birth weight newborns |
+| `population` | District under-5 population |
+
+Missing values in these covariates are handled internally using the rule-based workflow described above. The model also creates missingness and outlier indicator features for each modeled covariate.
 
 ### Optional severity columns
 
@@ -285,19 +331,13 @@ Observed IPC AMN severity can be calculated if the dataset includes a direct GAM
 ### Regression
 
 A `RandomForestRegressor` is used to forecast district GAM caseloads for the next 3 months.
-
-### Classification
-
-Two `RandomForestClassifier` models are used to evaluate:
-
-- within-district anomaly levels
-- between-district anomaly levels
+Forecast anomaly labels and operational alerts are derived from the regression forecast rather than emitted by a classifier in the forecasting path.
 
 ### Features
 
 The model pipeline uses:
 
-- climate, disease, maternal-child health, and population covariates
+- climate covariates plus under-5 disease and population covariates
 - lagged values
 - rolling summaries
 - seasonality features
@@ -392,6 +432,8 @@ pip install -r requirements.txt
 ## Notes and Limitations
 
 - Forecast accuracy depends on data quality, completeness, and reporting consistency.
+- Rule-based imputation can stabilize training and prediction, but large or systematic source-data gaps can still bias the model.
+- Extreme GAM spikes are retained by default and only flagged for QC, so known reporting artifacts should still be reviewed during analysis.
 - The anomaly labels are percentile-based early-warning indicators, not direct clinical diagnosis.
 - Severity phases require direct GAM prevalence data and may be unavailable in many datasets.
 - GeoJSON district naming mismatches can prevent map joins.
