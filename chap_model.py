@@ -391,6 +391,37 @@ def inverse_target(values: float | np.ndarray, scaler: dict) -> float | np.ndarr
     return np.expm1(np.asarray(values) * scaler["target_std"] + scaler["target_mean"])
 
 
+def build_fallback_scaler(cases: list[float] | np.ndarray) -> dict:
+    series = np.asarray(cases, dtype=float)
+    if series.size == 0:
+        series = np.array([0.0], dtype=float)
+    feature_mean = float(np.mean(series))
+    feature_std = float(np.std(series))
+    if feature_std < 1e-6:
+        feature_std = 1.0
+    target_log = transform_target(series)
+    target_mean = float(np.mean(target_log))
+    target_std = float(np.std(target_log))
+    if target_std < 1e-6:
+        target_std = 1.0
+    return {
+        "feature_mean": feature_mean,
+        "feature_std": feature_std,
+        "target_mean": target_mean,
+        "target_std": target_std,
+    }
+
+
+def pad_history(values: list[float], min_length: int, fill_value: float) -> list[float]:
+    history = list(values)
+    seed = float(fill_value)
+    if not history:
+        history = [seed]
+    while len(history) < min_length:
+        history.insert(0, float(history[0]))
+    return history
+
+
 def build_training_features(df: pd.DataFrame, covariate_cols: list[str]) -> tuple[pd.DataFrame, list[str], dict]:
     rows = []
     scalers = {}
@@ -558,26 +589,34 @@ def build_prediction_rows(
     feature_cols = model_artifact["feature_cols"]
     scalers = model_artifact["scalers"]
     rows = []
-    derived_covariate_features = covariate_lag_feature_names(covariate_cols)
     all_hist_vals = historic_df["disease_cases"].dropna().to_numpy(dtype=float)
+    global_case_baseline = float(np.median(all_hist_vals)) if len(all_hist_vals) else 0.0
+    global_scaler = build_fallback_scaler(all_hist_vals if len(all_hist_vals) else [0.0])
 
     locations = sorted(set(future_df["location"]))
     for location in locations:
         location_hist = historic_df[historic_df["location"] == location].sort_values("Date").reset_index(drop=True)
         location_future = future_df[future_df["location"] == location].sort_values("Date").reset_index(drop=True)
-        if len(location_hist) < 3:
-            continue
-        scaler = scalers.get(location)
-        if scaler is None:
+        if location_future.empty:
             continue
 
         hist_cases = location_hist["disease_cases"].astype(float).tolist()
-        known_covariates = last_known_covariates(location_hist, covariate_cols)
-        covariate_histories = {
-            covariate: list(location_hist[covariate].astype(float).values)
-            for covariate in covariate_cols
-            if covariate in location_hist.columns
-        }
+        hist_cases = pad_history(hist_cases, min_length=3, fill_value=global_case_baseline)
+        scaler = scalers.get(location, build_fallback_scaler(hist_cases if hist_cases else [global_case_baseline]))
+        if scaler is None:
+            scaler = global_scaler
+
+        known_covariates = last_known_covariates(location_hist, covariate_cols) if not location_hist.empty else {}
+        global_known_covariates = last_known_covariates(historic_df, covariate_cols) if not historic_df.empty else {}
+        covariate_histories = {}
+        for covariate in covariate_cols:
+            location_series = (
+                location_hist[covariate].dropna().astype(float).tolist()
+                if covariate in location_hist.columns
+                else []
+            )
+            fallback_covariate = known_covariates.get(covariate, global_known_covariates.get(covariate, 0.0))
+            covariate_histories[covariate] = pad_history(location_series, min_length=1, fill_value=fallback_covariate)
 
         for i in range(len(location_future)):
             future_row = location_future.iloc[i]
@@ -626,15 +665,15 @@ def build_prediction_rows(
                 if history:
                     feature_row[covariate] = float(history[-1])
                 else:
-                    feature_row[covariate] = float(known_covariates.get(covariate, 0.0))
+                    feature_row[covariate] = float(known_covariates.get(covariate, global_known_covariates.get(covariate, 0.0)))
             for covariate in LAGGED_EXOG_COVARIATES:
                 history = covariate_histories.get(covariate, [])
-                if not history:
-                    continue
-                feature_row[f"{covariate}_Lag2"] = float(history[-2] if len(history) >= 2 else history[-1])
-                feature_row[f"{covariate}_Lag3"] = float(history[-3] if len(history) >= 3 else history[-1])
-                feature_row[f"{covariate}_Roll2_Mean"] = float(np.mean(history[-2:])) if len(history) >= 2 else float(history[-1])
-                feature_row[f"{covariate}_Roll3_Mean"] = float(np.mean(history[-3:])) if len(history) >= 3 else float(np.mean(history))
+                fallback_value = feature_row.get(covariate, 0.0)
+                padded_history = pad_history(history, min_length=3, fill_value=fallback_value)
+                feature_row[f"{covariate}_Lag2"] = float(padded_history[-2])
+                feature_row[f"{covariate}_Lag3"] = float(padded_history[-3])
+                feature_row[f"{covariate}_Roll2_Mean"] = float(np.mean(padded_history[-2:]))
+                feature_row[f"{covariate}_Roll3_Mean"] = float(np.mean(padded_history[-3:]))
 
             scaled_row = scale_feature_row(feature_row, scaler)
             feature_vector = np.array([[scaled_row[column] for column in feature_cols]], dtype=float)
