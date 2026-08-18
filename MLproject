@@ -12,11 +12,14 @@ required_covariates:
   - rainfall
   - mean_relative_humidity
   - average_gpp
-  - malaria_confirmed
-  - pneumonia_cases
-  - diarrhea
+  - malaria_confirmed_u5
+  - pneumonia_cases_u5
+  - diarrhea_u5
   - low_birth_weight_babies
-  - population
+  - sam_admissions_u5
+  - screened_u5
+  - reporting_rate
+  - population_u5
 
 entry_points:
   train:
@@ -37,14 +40,20 @@ meta_data:
   description: >
     Monthly district-level acute malnutrition forecasting model prepared for
     DHIS2 CHAP integration. The model consumes CHAP-format case-count and
-    covariate data and returns probabilistic forecasts as sample columns.
-    Child-health covariates are interpreted as under-5 inputs, with
-    malaria_confirmed, pneumonia_cases, and diarrhea as under-5 case counts,
-    population as the under-5 denominator, and low_birth_weight_babies as a
-    neonatal indicator. Missing covariates are imputed with rule-based
+    covariate data and returns probabilistic forecasts as sample columns in
+    the default CHAP output mode.
+    All clinical and service-delivery covariates are interpreted as under-5
+    inputs, with malaria_confirmed_u5, pneumonia_cases_u5, diarrhea_u5,
+    sam_admissions_u5, and screened_u5 as under-5 case-count or
+    service-volume covariates, reporting_rate as a district
+    reporting-quality covariate, population_u5 as the under-5 denominator,
+    and low_birth_weight_babies as a
+    neonatal indicator within the same under-5 scope. Missing covariates are
+    imputed with rule-based
     district-aware preprocessing, extreme modeled covariates are capped with
     robust thresholds, and suspicious target spikes are flagged for QC rather
-    than clipped by default.
+    than clipped by default. Optional anomaly and operational-alert columns
+    are available only in the enriched testing mode.
   author: "HISP Uganda"
   author_assessed_status: orange
   documentation_url: "https://github.com/omielp/acute-malnutrition-RF-model"

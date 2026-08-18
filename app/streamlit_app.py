@@ -32,7 +32,7 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = APP_DIR if os.path.isdir(os.path.join(APP_DIR, "data", "sample")) else os.path.dirname(APP_DIR)
 DEFAULT_CSV_PATH = os.path.join(PROJECT_ROOT, "data", "sample", "Acute_Malnutrition_data_district.csv")
 DEFAULT_GEOJSON_PATH = os.path.join(PROJECT_ROOT, "data", "sample", "uganda-districts_ug.geojson")
-MODEL_SCHEMA_VERSION = "anomaly-4level-v9"
+MODEL_SCHEMA_VERSION = "anomaly-4level-v10"
 LEGACY_DIARRHEA_COLUMNS = ("diarrhea_acute", "diarrhea_persistent")
 CLIMATE_COVARIATES = [
     "mean_temperature",
@@ -41,13 +41,16 @@ CLIMATE_COVARIATES = [
     "average_gpp",
 ]
 CHILD_HEALTH_COVARIATES = [
-    "malaria_confirmed",
-    "pneumonia_cases",
-    "diarrhea",
+    "malaria_confirmed_u5",
+    "pneumonia_cases_u5",
+    "diarrhea_u5",
     "low_birth_weight_babies",
+    "sam_admissions_u5",
+    "screened_u5",
 ]
-SLOW_MOVING_COVARIATES = ["population"]
-MODELED_COVARIATES = CLIMATE_COVARIATES + CHILD_HEALTH_COVARIATES + SLOW_MOVING_COVARIATES
+RATE_COVARIATES = ["reporting_rate"]
+SLOW_MOVING_COVARIATES = ["population_u5"]
+MODELED_COVARIATES = CLIMATE_COVARIATES + CHILD_HEALTH_COVARIATES + RATE_COVARIATES + SLOW_MOVING_COVARIATES
 MISSING_FLAG_SUFFIX = "_missing"
 OUTLIER_FLAG_SUFFIX = "_outlier"
 COUNT_COVARIATES = CHILD_HEALTH_COVARIATES
@@ -56,11 +59,60 @@ LAGGED_EXOG_COVARIATES = [
     "rainfall",
     "mean_relative_humidity",
     "average_gpp",
-    "malaria_confirmed",
-    "pneumonia_cases",
-    "diarrhea",
+    "malaria_confirmed_u5",
+    "pneumonia_cases_u5",
+    "diarrhea_u5",
     "low_birth_weight_babies",
+    "sam_admissions_u5",
+    "screened_u5",
+    "reporting_rate",
 ]
+COVARIATE_ALIASES = {
+    "malaria_confirmed_u5": (
+        "malaria_confirmed_u5",
+        "malaria_confirmed",
+    ),
+    "pneumonia_cases_u5": (
+        "pneumonia_cases_u5",
+        "pneumonia_cases",
+    ),
+    "diarrhea_u5": (
+        "diarrhea_u5",
+        "diarrhea",
+        "diarrhea_acute",
+        "diarrhea_persistent",
+    ),
+    "sam_admissions_u5": (
+        "sam_admissions_u5",
+        "sam_admissions",
+        "sam_admission",
+        "sam_cases_admitted",
+        "sam_admitted",
+    ),
+    "screened_u5": (
+        "screened_u5",
+        "screening_assessment",
+        "screening_assessments",
+        "screened_children",
+        "children_screened",
+        "number_screened",
+        "screening_assessment_u5",
+    ),
+    "population_u5": (
+        "population_u5",
+        "population",
+        "under5population",
+        "u5population",
+    ),
+    "reporting_rate": (
+        "reporting_rate",
+        "facility_reporting_rate",
+        "district_reporting_rate",
+        "reporting_completeness",
+        "reporting_completeness_pct",
+        "hf_reporting_rate",
+    ),
+}
 
 RISK_LEVELS = ["Low", "Moderate", "High", "Extreme"]
 RISK_ORDER = {
@@ -108,38 +160,62 @@ ANOMALY_GUIDANCE = {
 SKEWED_COVS = CHILD_HEALTH_COVARIATES + SLOW_MOVING_COVARIATES
 
 FEATURE_COLS_NEW = MODELED_COVARIATES
+REPORTING_RATE_FLOOR = 0.6
+PROXY_SCREEN_WEIGHT = 0.7
+PROXY_SAM_WEIGHT = 0.3
+PROXY_SOURCE_BASE_WEIGHTS = {
+    "observed": 1.0,
+    "proxy_combined": 0.6,
+    "proxy_screened": 0.5,
+    "proxy_sam_admissions": 0.35,
+    "missing": 0.0,
+}
 
 NICE_NAMES = {
     "mean_temperature": "Mean Temperature",
     "rainfall": "Rainfall",
     "mean_relative_humidity": "Relative Humidity",
     "average_gpp": "Avg GPP",
-    "malaria_confirmed": "Malaria Cases (<5)",
-    "pneumonia_cases": "Pneumonia Cases (<5)",
-    "diarrhea": "Diarrhoea Cases (<5)",
+    "malaria_confirmed_u5": "Malaria Cases (<5)",
+    "pneumonia_cases_u5": "Pneumonia Cases (<5)",
+    "diarrhea_u5": "Diarrhoea Cases (<5)",
     "low_birth_weight_babies": "Low Birth Weight Newborns",
-    "population": "Under-5 Population",
+    "sam_admissions_u5": "SAM Admissions (<5)",
+    "screened_u5": "Children Screened (<5)",
+    "reporting_rate": "Facility Reporting Rate",
+    "population_u5": "Under-5 Population",
     "mean_temperature_missing": "Mean Temperature Missing",
     "rainfall_missing": "Rainfall Missing",
     "mean_relative_humidity_missing": "Relative Humidity Missing",
     "average_gpp_missing": "Avg GPP Missing",
-    "malaria_confirmed_missing": "Malaria Cases (<5) Missing",
-    "pneumonia_cases_missing": "Pneumonia Cases (<5) Missing",
-    "diarrhea_missing": "Diarrhoea Cases (<5) Missing",
+    "malaria_confirmed_u5_missing": "Malaria Cases (<5) Missing",
+    "pneumonia_cases_u5_missing": "Pneumonia Cases (<5) Missing",
+    "diarrhea_u5_missing": "Diarrhoea Cases (<5) Missing",
     "low_birth_weight_babies_missing": "Low Birth Weight Newborns Missing",
-    "population_missing": "Under-5 Population Missing",
+    "sam_admissions_u5_missing": "SAM Admissions (<5) Missing",
+    "screened_u5_missing": "Children Screened (<5) Missing",
+    "reporting_rate_missing": "Facility Reporting Rate Missing",
+    "population_u5_missing": "Under-5 Population Missing",
     "mean_temperature_outlier": "Mean Temperature Outlier",
     "rainfall_outlier": "Rainfall Outlier",
     "mean_relative_humidity_outlier": "Relative Humidity Outlier",
     "average_gpp_outlier": "Avg GPP Outlier",
-    "malaria_confirmed_outlier": "Malaria Cases (<5) Outlier",
-    "pneumonia_cases_outlier": "Pneumonia Cases (<5) Outlier",
-    "diarrhea_outlier": "Diarrhoea Cases (<5) Outlier",
+    "malaria_confirmed_u5_outlier": "Malaria Cases (<5) Outlier",
+    "pneumonia_cases_u5_outlier": "Pneumonia Cases (<5) Outlier",
+    "diarrhea_u5_outlier": "Diarrhoea Cases (<5) Outlier",
     "low_birth_weight_babies_outlier": "Low Birth Weight Newborns Outlier",
-    "population_outlier": "Under-5 Population Outlier",
+    "sam_admissions_u5_outlier": "SAM Admissions (<5) Outlier",
+    "screened_u5_outlier": "Children Screened (<5) Outlier",
+    "reporting_rate_outlier": "Facility Reporting Rate Outlier",
+    "population_u5_outlier": "Under-5 Population Outlier",
     "target_outlier_qc": "GAM Target Outlier QC",
     "target_duplicate_qc": "Duplicate District-Month QC",
     "Acut_Malnutrition": "GAM Caseload (SAM + MAM)",
+    "Acut_Malnutrition_Observed": "Observed GAM Caseload",
+    "target_source": "Target Source",
+    "target_proxy_confidence": "Target Proxy Confidence",
+    "target_is_observed": "Observed Target Flag",
+    "target_training_weight": "Target Training Weight",
 }
 
 DISPLAY_LABELS = {
@@ -174,6 +250,8 @@ DISPLAY_LABELS = {
     "Total_GAM_Caseload": "Total GAM Caseload",
     "Zero_GAM_Districts": "Districts with Zero GAM",
     "Reporting_Completeness_Pct": "Reporting Completeness (%)",
+    "target_source": "Target Source",
+    "target_proxy_confidence": "Target Proxy Confidence",
 }
 
 _EXCLUDE_FROM_FEATURES = {
@@ -208,6 +286,17 @@ _EXCLUDE_FROM_FEATURES = {
     "Operational_Alert_Why",
     "month",
     "quarter",
+    "Acut_Malnutrition_Observed",
+    "effective_reporting_rate",
+    "screened_u5_adjusted",
+    "sam_admissions_u5_adjusted",
+    "gam_proxy_screened",
+    "gam_proxy_sam_admissions",
+    "gam_proxy_combined",
+    "target_source",
+    "target_proxy_confidence",
+    "target_is_observed",
+    "target_training_weight",
     "target_outlier_qc",
     "target_duplicate_qc",
     "diarrhea_acute",
@@ -474,7 +563,7 @@ def get_severity_setup(df: pd.DataFrame) -> dict:
     muac_col = find_matching_col(columns, [
         "gammuac", "gammuacpct", "gammuacpercent", "gammuacprevalence",
     ])
-    total_pop_col = find_matching_col(columns, ["population", "totalpopulation"])
+    total_pop_col = find_matching_col(columns, ["populationu5", "population", "totalpopulation", "under5population", "u5population"])
 
     if whz_col:
         return {
@@ -617,6 +706,7 @@ def _count_iqr_outliers(values: pd.Series) -> int:
 def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
     severity_setup = get_severity_setup(df)
     pop_col = severity_setup["population_col"]
+    target_col = "Acut_Malnutrition_Observed" if "Acut_Malnutrition_Observed" in df.columns else "Acut_Malnutrition"
     districts = sorted(df["District_Name"].unique())
     expected_months = len(pd.period_range(df["Date"].min(), df["Date"].max(), freq="M"))
     total_districts = len(districts)
@@ -624,12 +714,14 @@ def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, p
     district_rows = []
     for district in districts:
         d = df[df["District_Name"] == district].sort_values("Date")
+        observed_target = pd.to_numeric(d[target_col], errors="coerce")
+        observed_months = int(d.loc[observed_target.notna(), "Date"].nunique())
         pop_missing = 0
         duplicate_target_rows = int(d.duplicated(subset=["Date"]).sum())
         outlier_target_rows = (
             int(pd.to_numeric(d["target_outlier_qc"], errors="coerce").fillna(0).sum())
             if "target_outlier_qc" in d.columns
-            else _count_iqr_outliers(d["Acut_Malnutrition"])
+            else _count_iqr_outliers(observed_target)
         )
         if pop_col is not None and pop_col in d.columns:
             missing_col = f"{pop_col}{MISSING_FLAG_SUFFIX}"
@@ -640,9 +732,9 @@ def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, p
 
         district_rows.append({
             "District": district,
-            "Months_Reported": int(d["Date"].nunique()),
-            "Completeness_Pct": round(d["Date"].nunique() / expected_months * 100, 1) if expected_months else np.nan,
-            "Zero_GAM_Months": int((pd.to_numeric(d["Acut_Malnutrition"], errors="coerce").fillna(0) == 0).sum()),
+            "Months_Reported": observed_months,
+            "Completeness_Pct": round(observed_months / expected_months * 100, 1) if expected_months else np.nan,
+            "Zero_GAM_Months": int(observed_target.eq(0).sum()),
             "Outlier_GAM_Months": outlier_target_rows,
             "Duplicate_Target_Rows": duplicate_target_rows,
             "Missing_Population": pop_missing,
@@ -656,14 +748,16 @@ def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, p
     ).reset_index(drop=True)
 
     monthly = (
-        df.groupby("Date")
-        .agg(
-            Districts_Reported=("District_Name", "nunique"),
-            Total_GAM_Caseload=("Acut_Malnutrition", "sum"),
-            Zero_GAM_Districts=("Acut_Malnutrition", lambda s: int((pd.to_numeric(s, errors="coerce").fillna(0) == 0).sum())),
-            Missing_Severity=("Severity_Prevalence_Pct", lambda s: int(s.isna().sum())),
-            Target_Outlier_Rows=("target_outlier_qc", lambda s: int(pd.to_numeric(s, errors="coerce").fillna(0).sum())) if "target_outlier_qc" in df.columns else ("Acut_Malnutrition", lambda s: 0),
-            Duplicate_Target_Rows=("target_duplicate_qc", lambda s: int(pd.to_numeric(s, errors="coerce").fillna(0).sum())) if "target_duplicate_qc" in df.columns else ("Acut_Malnutrition", lambda s: 0),
+        df.groupby("Date", sort=True)
+        .apply(
+            lambda g: pd.Series({
+                "Districts_Reported": int(g.loc[pd.to_numeric(g[target_col], errors="coerce").notna(), "District_Name"].nunique()),
+                "Total_GAM_Caseload": float(pd.to_numeric(g[target_col], errors="coerce").sum()),
+                "Zero_GAM_Districts": int(pd.to_numeric(g[target_col], errors="coerce").eq(0).sum()),
+                "Missing_Severity": int(g["Severity_Prevalence_Pct"].isna().sum()),
+                "Target_Outlier_Rows": int(pd.to_numeric(g["target_outlier_qc"], errors="coerce").fillna(0).sum()) if "target_outlier_qc" in g.columns else 0,
+                "Duplicate_Target_Rows": int(pd.to_numeric(g["target_duplicate_qc"], errors="coerce").fillna(0).sum()) if "target_duplicate_qc" in g.columns else 0,
+            })
         )
         .reset_index()
         .sort_values("Date")
@@ -681,6 +775,40 @@ def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, p
         "duplicate_rows": duplicate_rows,
     }
     return summary, district_quality, monthly
+
+
+def compute_target_proxy_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+    source_series = (
+        df["target_source"].fillna("missing")
+        if "target_source" in df.columns
+        else pd.Series("observed", index=df.index, dtype="object")
+    )
+    confidence_series = (
+        df["target_proxy_confidence"].fillna("No Data")
+        if "target_proxy_confidence" in df.columns
+        else pd.Series("Observed", index=df.index, dtype="object")
+    )
+
+    summary = {
+        "observed_rows": int(source_series.eq("observed").sum()),
+        "proxy_rows": int(source_series.ne("observed").sum()),
+        "proxy_combined_rows": int(source_series.eq("proxy_combined").sum()),
+        "proxy_screened_rows": int(source_series.eq("proxy_screened").sum()),
+        "proxy_sam_rows": int(source_series.eq("proxy_sam_admissions").sum()),
+    }
+
+    proxy_table = (
+        pd.DataFrame({
+            "Target_Source": source_series,
+            "Target_Proxy_Confidence": confidence_series,
+        })
+        .value_counts()
+        .rename("Rows")
+        .reset_index()
+        .sort_values(["Rows", "Target_Source"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+    return summary, proxy_table
 
 
 def apply_log_transform(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -1198,16 +1326,40 @@ def load_data_from_path(path: str) -> pd.DataFrame:
     return load_data_from_df(pd.read_csv(path))
 
 
+def find_column(df: pd.DataFrame, candidates: tuple[str, ...] | list[str]) -> str | None:
+    lower_map = {col.lower(): col for col in df.columns}
+    for candidate in candidates:
+        if candidate in df.columns:
+            return candidate
+        if candidate.lower() in lower_map:
+            return lower_map[candidate.lower()]
+    return None
+
+
 def harmonize_diarrhea_covariate(df: pd.DataFrame) -> pd.DataFrame:
     legacy_cols = [col for col in LEGACY_DIARRHEA_COLUMNS if col in df.columns]
-    if "diarrhea" not in df.columns and legacy_cols:
+    if "diarrhea_u5" not in df.columns:
+        direct_source = find_column(df, ["diarrhea_u5", "diarrhea"])
+        if direct_source is not None:
+            df["diarrhea_u5"] = pd.to_numeric(df[direct_source], errors="coerce")
+    if "diarrhea_u5" not in df.columns and legacy_cols:
         legacy_values = pd.concat(
             [pd.to_numeric(df[col], errors="coerce") for col in legacy_cols],
             axis=1,
         )
-        df["diarrhea"] = legacy_values.sum(axis=1, min_count=1)
+        df["diarrhea_u5"] = legacy_values.sum(axis=1, min_count=1)
     if legacy_cols:
         df = df.drop(columns=legacy_cols)
+    return df
+
+
+def harmonize_optional_covariates(df: pd.DataFrame) -> pd.DataFrame:
+    for canonical, aliases in COVARIATE_ALIASES.items():
+        if canonical in df.columns:
+            continue
+        source = find_column(df, aliases)
+        if source is not None:
+            df[canonical] = df[source]
     return df
 
 
@@ -1229,7 +1381,10 @@ def sanitize_covariate_values(name: str, values: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(values, errors="coerce")
     if name in COUNT_COVARIATES:
         return numeric.mask(numeric < 0)
-    if name == "population":
+    if name == "reporting_rate":
+        numeric = numeric.mask((numeric < 0) | (numeric > 100))
+        return numeric.where(numeric <= 1, numeric / 100.0)
+    if name == "population_u5":
         return numeric.mask(numeric <= 0)
     if name == "rainfall":
         return numeric.mask(numeric < 0)
@@ -1285,6 +1440,147 @@ def add_target_qc_flags(df: pd.DataFrame, group_col: str, target_col: str) -> pd
     return df
 
 
+def effective_reporting_rate(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").clip(lower=0, upper=1)
+    numeric = numeric.where(numeric > 0)
+    return numeric.fillna(1.0).clip(lower=REPORTING_RATE_FLOOR, upper=1.0)
+
+
+def _median_or_nan(history: list[float]) -> float:
+    if not history:
+        return np.nan
+    return float(np.median(np.asarray(history, dtype=float)))
+
+
+def fill_group_month_median(
+    df: pd.DataFrame,
+    values: pd.Series,
+    group_col: str,
+    date_col: str,
+) -> pd.Series:
+    ordered = df.sort_values([date_col, group_col]).copy()
+    filled = pd.Series(np.nan, index=df.index, dtype="float64")
+    group_month_history: dict[tuple[str, int], list[float]] = {}
+    group_history: dict[str, list[float]] = {}
+    global_history: list[float] = []
+
+    for current_date, batch in ordered.groupby(date_col, sort=True):
+        batch_index = list(batch.index)
+        for idx in batch_index:
+            group_key = str(ordered.loc[idx, group_col])
+            month_key = int(pd.Timestamp(current_date).month)
+            estimate = _median_or_nan(group_month_history.get((group_key, month_key), []))
+            if pd.isna(estimate):
+                estimate = _median_or_nan(group_history.get(group_key, []))
+            if pd.isna(estimate):
+                estimate = _median_or_nan(global_history)
+            filled.loc[idx] = estimate
+
+        for idx in batch_index:
+            value = pd.to_numeric(values.loc[idx], errors="coerce")
+            if pd.isna(value):
+                continue
+            group_key = str(ordered.loc[idx, group_col])
+            month_key = int(pd.Timestamp(current_date).month)
+            group_month_history.setdefault((group_key, month_key), []).append(float(value))
+            group_history.setdefault(group_key, []).append(float(value))
+            global_history.append(float(value))
+
+    return filled
+
+
+def add_target_proxy_columns(
+    df: pd.DataFrame,
+    target_col: str,
+    group_col: str,
+    date_col: str,
+) -> pd.DataFrame:
+    df = df.copy()
+    observed = pd.to_numeric(df[target_col], errors="coerce")
+    reporting_rate = (
+        pd.to_numeric(df["reporting_rate"], errors="coerce")
+        if "reporting_rate" in df.columns
+        else pd.Series(1.0, index=df.index, dtype="float64")
+    )
+    effective_rate = effective_reporting_rate(reporting_rate)
+    screened = pd.to_numeric(df["screened_u5"], errors="coerce") if "screened_u5" in df.columns else pd.Series(np.nan, index=df.index, dtype="float64")
+    sam = pd.to_numeric(df["sam_admissions_u5"], errors="coerce") if "sam_admissions_u5" in df.columns else pd.Series(np.nan, index=df.index, dtype="float64")
+
+    screened_adjusted = screened / effective_rate
+    sam_adjusted = sam / effective_rate
+
+    screened_ratio_source = (observed / screened_adjusted.replace(0, np.nan)).where(observed.notna() & screened_adjusted.gt(0))
+    sam_ratio_source = (observed / sam_adjusted.replace(0, np.nan)).where(observed.notna() & sam_adjusted.gt(0))
+
+    screened_ratio = fill_group_month_median(df, screened_ratio_source, group_col, date_col)
+    sam_ratio = fill_group_month_median(df, sam_ratio_source, group_col, date_col)
+
+    gam_proxy_screened = (screened_adjusted * screened_ratio).where(screened_adjusted.gt(0)).clip(lower=0)
+    gam_proxy_sam_admissions = (sam_adjusted * sam_ratio).where(sam_adjusted.gt(0)).clip(lower=0)
+
+    gam_proxy_combined = pd.Series(np.nan, index=df.index, dtype="float64")
+    both = gam_proxy_screened.notna() & gam_proxy_sam_admissions.notna()
+    only_screened = gam_proxy_screened.notna() & ~gam_proxy_sam_admissions.notna()
+    only_sam = gam_proxy_sam_admissions.notna() & ~gam_proxy_screened.notna()
+    gam_proxy_combined.loc[both] = (
+        PROXY_SCREEN_WEIGHT * gam_proxy_screened.loc[both]
+        + PROXY_SAM_WEIGHT * gam_proxy_sam_admissions.loc[both]
+    )
+    gam_proxy_combined.loc[only_screened] = gam_proxy_screened.loc[only_screened]
+    gam_proxy_combined.loc[only_sam] = gam_proxy_sam_admissions.loc[only_sam]
+
+    target_source = pd.Series("missing", index=df.index, dtype="object")
+    target_source.loc[only_sam] = "proxy_sam_admissions"
+    target_source.loc[only_screened] = "proxy_screened"
+    target_source.loc[both] = "proxy_combined"
+    target_source.loc[observed.notna()] = "observed"
+
+    reporting_for_conf = reporting_rate.fillna(1.0)
+    sam_mask = target_source.eq("proxy_sam_admissions")
+    screened_mask = target_source.eq("proxy_screened")
+    combined_mask = target_source.eq("proxy_combined")
+    target_proxy_confidence = pd.Series("No Data", index=df.index, dtype="object")
+    target_proxy_confidence.loc[observed.notna()] = "Observed"
+    target_proxy_confidence.loc[sam_mask] = "Low"
+    target_proxy_confidence.loc[screened_mask] = np.where(
+        reporting_for_conf.loc[screened_mask].ge(0.8),
+        "Medium",
+        "Low",
+    )
+    target_proxy_confidence.loc[combined_mask] = np.where(
+        reporting_for_conf.loc[combined_mask].ge(0.8),
+        "High",
+        np.where(reporting_for_conf.loc[combined_mask].ge(0.6), "Medium", "Low"),
+    )
+
+    report_weight_factor = pd.Series(
+        np.where(
+            reporting_for_conf.ge(0.8),
+            1.0,
+            np.where(reporting_for_conf.ge(0.6), 0.85, 0.7),
+        ),
+        index=df.index,
+        dtype="float64",
+    )
+    target_training_weight = target_source.map(PROXY_SOURCE_BASE_WEIGHTS).astype(float)
+    proxy_mask = target_source.ne("observed")
+    target_training_weight.loc[proxy_mask] = target_training_weight.loc[proxy_mask] * report_weight_factor.loc[proxy_mask]
+
+    df[f"{target_col}_Observed"] = observed
+    df["effective_reporting_rate"] = effective_rate
+    df["screened_u5_adjusted"] = screened_adjusted
+    df["sam_admissions_u5_adjusted"] = sam_adjusted
+    df["gam_proxy_screened"] = gam_proxy_screened
+    df["gam_proxy_sam_admissions"] = gam_proxy_sam_admissions
+    df["gam_proxy_combined"] = gam_proxy_combined
+    df["target_source"] = target_source
+    df["target_proxy_confidence"] = target_proxy_confidence
+    df["target_is_observed"] = observed.notna().astype(float)
+    df["target_training_weight"] = target_training_weight
+    df[target_col] = observed.fillna(gam_proxy_combined)
+    return df
+
+
 def covariate_lag_feature_names(available_columns: list[str] | set[str]) -> list[str]:
     available = set(available_columns)
     names = []
@@ -1325,6 +1621,12 @@ def impute_modeled_covariates(df: pd.DataFrame, group_col: str, date_col: str) -
         df[col] = df[col].fillna(_district_median(df, group_col, col))
         df[col] = _fill_remaining(df[col]).clip(lower=0)
 
+    for col in [covariate for covariate in RATE_COVARIATES if covariate in df.columns]:
+        df[col] = df.groupby(group_col)[col].transform(lambda series: series.ffill(limit=1))
+        df[col] = df[col].fillna(_district_month_median(df, group_col, date_col, col))
+        df[col] = df[col].fillna(_district_median(df, group_col, col))
+        df[col] = _fill_remaining(df[col]).clip(lower=0, upper=1)
+
     for col in [covariate for covariate in SLOW_MOVING_COVARIATES if covariate in df.columns]:
         df[col] = df.groupby(group_col)[col].transform(lambda series: series.ffill().bfill())
         df[col] = df[col].fillna(_district_median(df, group_col, col))
@@ -1340,10 +1642,11 @@ def load_data_from_df(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"Missing required columns: {missing}")
 
     df = harmonize_diarrhea_covariate(df.copy())
+    df = harmonize_optional_covariates(df)
 
     df["Date"] = df["time_period"].apply(parse_date)
     df["Acut_Malnutrition"] = sanitize_target_values(df["Acut_Malnutrition"])
-    df = df.dropna(subset=["Date", "Acut_Malnutrition"]).copy()
+    df = df.dropna(subset=["Date"]).copy()
 
     raw_rd = df["Region_District"].astype(str).str.strip()
     df["Region_District"] = raw_rd
@@ -1365,6 +1668,8 @@ def load_data_from_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["District_Name", "Date"]).reset_index(drop=True)
     df = add_target_qc_flags(df, group_col="District_Name", target_col="Acut_Malnutrition")
     df = impute_modeled_covariates(df, group_col="District_Name", date_col="Date")
+    df = add_target_proxy_columns(df, target_col="Acut_Malnutrition", group_col="District_Name", date_col="Date")
+    df = df.dropna(subset=["Acut_Malnutrition"]).copy()
 
     severity_setup = get_severity_setup(df)
     df["Severity_Basis"] = severity_setup["basis"]
@@ -1519,6 +1824,11 @@ def build_features(_df: pd.DataFrame):
                 "WD_Score_Lag": d.loc[i - 1, "wd_score"],
                 "XD_Score_Lag": d.loc[i - 1, "xd_score"],
                 "Target_Adm": adm[i],
+                "Target_Adm_Observed": float(d.loc[i, "Acut_Malnutrition_Observed"]) if pd.notna(d.loc[i, "Acut_Malnutrition_Observed"]) else np.nan,
+                "Target_Source": d.loc[i, "target_source"] if "target_source" in d.columns else "observed",
+                "Target_Proxy_Confidence": d.loc[i, "target_proxy_confidence"] if "target_proxy_confidence" in d.columns else "Observed",
+                "Target_Is_Observed": float(d.loc[i, "target_is_observed"]) if "target_is_observed" in d.columns else 1.0,
+                "Target_Training_Weight": float(d.loc[i, "target_training_weight"]) if "target_training_weight" in d.columns else 1.0,
                 "Target_WD_Risk": d.loc[i, "wd_risk"],
                 "Target_XD_Risk": d.loc[i, "xd_risk"],
             }
@@ -1598,7 +1908,12 @@ def build_features(_df: pd.DataFrame):
         "District",
         "Date",
         "Target_Adm",
+        "Target_Adm_Observed",
         "Target_Adm_Transformed",
+        "Target_Source",
+        "Target_Proxy_Confidence",
+        "Target_Is_Observed",
+        "Target_Training_Weight",
         "Target_WD_Risk",
         "Target_XD_Risk",
     }
@@ -1651,6 +1966,7 @@ def run_regression_cv(_feat_df: pd.DataFrame, feature_cols: list[str], _scalers:
     valid = _feat_df.dropna(subset=["Target_Adm_Transformed"]).copy().reset_index(drop=True)
     X = valid[feature_cols].values
     y = valid["Target_Adm_Transformed"].values
+    weights = valid["Target_Training_Weight"].fillna(1.0).values if "Target_Training_Weight" in valid.columns else None
     splits = wf_splits(valid)
     if not splits:
         return {"error": "Not enough data for regression CV."}
@@ -1665,33 +1981,39 @@ def run_regression_cv(_feat_df: pd.DataFrame, feature_cols: list[str], _scalers:
             continue
 
         model = make_regressor()
-        model.fit(X[tr_p], y[tr_p])
+        model.fit(X[tr_p], y[tr_p], sample_weight=weights[tr_p] if weights is not None else None)
         pred_transformed = model.predict(X[te_p])
         meta = valid.iloc[te_p]
-        actual_raw = meta["Target_Adm"].values
         pred_raw = np.array([
             inverse_regression_target(pred_transformed[j], _scalers[meta.iloc[j]["District"]])
             for j in range(len(te_p))
         ])
+        observed_mask = meta["Target_Is_Observed"].fillna(0).to_numpy(dtype=float) > 0.5
+        if not observed_mask.any():
+            continue
+        actual_raw = meta.loc[observed_mask, "Target_Adm_Observed"].values
+        pred_eval = pred_raw[observed_mask]
 
-        mae_cv.append(mean_absolute_error(actual_raw, pred_raw))
-        rmse_cv.append(np.sqrt(mean_squared_error(actual_raw, pred_raw)))
+        mae_cv.append(mean_absolute_error(actual_raw, pred_eval))
+        rmse_cv.append(np.sqrt(mean_squared_error(actual_raw, pred_eval)))
 
-        for j in range(len(te_p)):
-            residual = actual_raw[j] - pred_raw[j]
+        observed_positions = np.flatnonzero(observed_mask)
+        for j in observed_positions:
+            residual = meta.iloc[j]["Target_Adm_Observed"] - pred_raw[j]
             resid_rows.append({
                 "District": meta.iloc[j]["District"],
                 "Date": meta.iloc[j]["Date"],
                 "XD_Risk": meta.iloc[j]["Target_XD_Risk"],
-                "Actual": actual_raw[j],
+                "Target_Source": meta.iloc[j]["Target_Source"],
+                "Actual": meta.iloc[j]["Target_Adm_Observed"],
                 "Predicted": pred_raw[j],
                 "Residual": residual,
-                "Signed_Error": pred_raw[j] - actual_raw[j],
+                "Signed_Error": pred_raw[j] - meta.iloc[j]["Target_Adm_Observed"],
                 "Absolute_Error": abs(residual),
             })
 
     final_model = make_regressor()
-    final_model.fit(X, y)
+    final_model.fit(X, y, sample_weight=weights)
     feat_imp = pd.DataFrame({
         "Feature": feature_cols,
         "Importance": final_model.feature_importances_,
@@ -1708,7 +2030,7 @@ def run_regression_cv(_feat_df: pd.DataFrame, feature_cols: list[str], _scalers:
         "cv_p90_ae": float(residuals["Absolute_Error"].quantile(0.90)) if not residuals.empty else np.nan,
         "feat_imp": feat_imp,
         "residuals": residuals,
-        "n_folds": len(splits),
+        "n_folds": len(mae_cv),
         "model": final_model,
         "target_transform": "log1p raw caseload, z-scored within district",
     }
@@ -1745,7 +2067,8 @@ class Forecaster:
             self.extra_vals[d] = {c: float(last.get(c, 0.0)) for c in self.extra}
 
         self.reg = make_regressor()
-        self.reg.fit(valid[feature_cols].values, valid["Target_Adm_Transformed"].values)
+        sample_weight = valid["Target_Training_Weight"].fillna(1.0).values if "Target_Training_Weight" in valid.columns else None
+        self.reg.fit(valid[feature_cols].values, valid["Target_Adm_Transformed"].values, sample_weight=sample_weight)
         return self
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -2161,6 +2484,7 @@ def main():
     view_fc_df = fc_df[fc_df["District"].isin(active_districts)].copy()
     method_df = build_methodology_df(view_df)
     dq_summary, dq_district, dq_monthly = compute_data_quality_tables(view_df)
+    proxy_summary, proxy_table = compute_target_proxy_tables(view_df)
 
     if use_all_districts:
         scoped_reg_eval = reg_eval
@@ -2191,7 +2515,7 @@ def main():
             c4.metric("Feature rows", f"{len(view_feat_df):,}")
 
         with st.expander("Data Quality & Method", expanded=True):
-            mtab, dtab, mtab2 = st.tabs(["Methodology", "District Quality", "Monthly Quality"])
+            mtab, dtab, mtab2, ptab = st.tabs(["Methodology", "District Quality", "Monthly Quality", "Target Proxies"])
 
             with mtab:
                 k1, k2, k3 = st.columns(3)
@@ -2232,7 +2556,22 @@ def main():
                 q6.metric("Latest month completeness", f"{dq_monthly['Reporting_Completeness_Pct'].iloc[-1]:.1f}%" if not dq_monthly.empty else "0.0%")
                 st.dataframe(rename_for_display(dq_monthly), use_container_width=True, hide_index=True, height=320)
 
+            with ptab:
+                p1, p2, p3, p4, p5 = st.columns(5)
+                p1.metric("Observed targets", f"{proxy_summary['observed_rows']:,}")
+                p2.metric("Proxy targets", f"{proxy_summary['proxy_rows']:,}")
+                p3.metric("Combined proxy", f"{proxy_summary['proxy_combined_rows']:,}")
+                p4.metric("Screened proxy", f"{proxy_summary['proxy_screened_rows']:,}")
+                p5.metric("SAM proxy", f"{proxy_summary['proxy_sam_rows']:,}")
+                st.caption("Observed GAM rows remain the gold-standard evaluation set. Proxy-filled rows can contribute to training with reduced weights.")
+                st.dataframe(rename_for_display(proxy_table), use_container_width=True, hide_index=True, height=240)
+
         latest = view_df.sort_values("Date").groupby("District_Name").last().reset_index()
+        observed_latest = latest.copy()
+        if "Acut_Malnutrition_Observed" in view_df.columns:
+            observed_rows = view_df[pd.to_numeric(view_df["Acut_Malnutrition_Observed"], errors="coerce").notna()].copy()
+            if not observed_rows.empty:
+                observed_latest = observed_rows.sort_values("Date").groupby("District_Name").last().reset_index()
         with st.expander("Current Situation", expanded=True):
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -2276,6 +2615,8 @@ def main():
         with st.expander("Observed Anomalies & Operational Alert", expanded=True):
             if not geo_source or geo_name_col is None:
                 st.info("Provide your district GeoJSON in the sidebar to show observed maps.")
+            elif observed_latest.empty:
+                st.info("No observed GAM rows are available for the observed anomaly maps.")
             else:
                 try:
                     if hasattr(geo_source, "seek"):
@@ -2287,32 +2628,35 @@ def main():
                     if matched == 0:
                         st.error("No matching district names. Select the correct GeoJSON district name column.")
                     else:
-                        latest_period = latest["Date"].max().strftime("%B %Y") if not latest.empty else "Latest Available Month"
+                        if observed_latest["Date"].nunique() == 1:
+                            latest_period = observed_latest["Date"].max().strftime("%B %Y")
+                        else:
+                            latest_period = "Latest Observed Month by District"
                         m1, m2, m3 = st.columns(3)
                         with m1:
                             render_map(
                                 gdf,
-                                latest[["District_Name", "wd_risk", "Acut_Malnutrition"]],
+                                observed_latest[["District_Name", "wd_risk", "Acut_Malnutrition_Observed"]],
                                 "wd_risk",
                                 f"Within-District Anomaly - {latest_period}",
-                                ["Acut_Malnutrition"],
+                                ["Acut_Malnutrition_Observed"],
                             )
                         with m2:
                             render_map(
                                 gdf,
-                                latest[["District_Name", "xd_risk", "Acut_Malnutrition"]],
+                                observed_latest[["District_Name", "xd_risk", "Acut_Malnutrition_Observed"]],
                                 "xd_risk",
                                 f"Between-Districts Anomaly - {latest_period}",
-                                ["Acut_Malnutrition"],
+                                ["Acut_Malnutrition_Observed"],
                             )
                         with m3:
-                            if "Operational_Alert" in latest.columns:
+                            if "Operational_Alert" in observed_latest.columns:
                                 render_map(
                                     gdf,
-                                    latest[[c for c in ["District_Name", "Operational_Alert", "Operational_Alert_Why", "Acut_Malnutrition"] if c in latest.columns]],
+                                    observed_latest[[c for c in ["District_Name", "Operational_Alert", "Operational_Alert_Why", "Acut_Malnutrition_Observed"] if c in observed_latest.columns]],
                                     "Operational_Alert",
                                     f"Operational Alert - {latest_period}",
-                                    [c for c in ["Acut_Malnutrition", "Operational_Alert_Why"] if c in latest.columns],
+                                    [c for c in ["Acut_Malnutrition_Observed", "Operational_Alert_Why"] if c in observed_latest.columns],
                                 )
                             else:
                                 st.info("Operational Alert is not available for the current observed dataset.")
@@ -2323,7 +2667,7 @@ def main():
         with st.expander("Raw Classified Data", expanded=False):
             show_cols = [
                 "Region_District", "District_Name", "Region_Label", "time_period", "Date",
-                "Acut_Malnutrition", "wd_risk", "xd_risk",
+                "Acut_Malnutrition", "Acut_Malnutrition_Observed", "target_source", "target_proxy_confidence", "wd_risk", "xd_risk",
                 "Caseload_per_100000_Pop", "Operational_Alert", "Operational_Alert_Why",
             ] + [c for c in FEATURE_COLS_NEW if c in df.columns]
             show_cols = [c for c in show_cols if c in df.columns]

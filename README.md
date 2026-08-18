@@ -156,29 +156,34 @@ The CHAP-facing scripts accept the standard CHAP column names:
 - `location`
 - `disease_cases` for `train_data` and `historic_data`
 
-Optional covariates supported by the model:
+Modeled covariates supported by the model:
 
 - `mean_temperature`
 - `rainfall`
 - `mean_relative_humidity`
 - `average_gpp`
-- `malaria_confirmed` for malaria cases among children under 5
-- `pneumonia_cases` for pneumonia cases among children under 5
-- `diarrhea` for diarrhoea cases among children under 5
+- `malaria_confirmed_u5` for malaria cases among children under 5
+- `pneumonia_cases_u5` for pneumonia cases among children under 5
+- `diarrhea_u5` for diarrhoea cases among children under 5
 - `low_birth_weight_babies` for low birth weight newborns
-- `population` for the district under-5 population
+- `sam_admissions_u5` for SAM admissions among children under 5
+- `screened_u5` for under-5 nutrition screening or assessment volume
+- `reporting_rate` for the district health-facility reporting rate, accepted as either `0-1` or `0-100`
+- `population_u5` for the district under-5 population
 
-For this project, the non-climate child-health covariates are interpreted as children under 5 years of age. In practice this means:
+For this project, all clinical and service-delivery covariates are interpreted as children under 5 years of age. In practice this means:
 
-- `malaria_confirmed`, `pneumonia_cases`, and `diarrhea` are under-5 case counts
-- `population` is the under-5 population denominator
-- `low_birth_weight_babies` remains a neonatal indicator used as an input covariate
+- `malaria_confirmed_u5`, `pneumonia_cases_u5`, `diarrhea_u5`, `sam_admissions_u5`, and `screened_u5` are under-5 case-count or service-volume inputs
+- `low_birth_weight_babies` is retained as a neonatal input and therefore still falls within the under-5 scope
+- `reporting_rate` is a district operational-quality input and is normalized to a `0-1` fraction inside the pipeline
+- `population_u5` is the under-5 population denominator
 
 For backward compatibility with older datasets, the wrapper also accepts:
 
 - `Region_District` as a fallback for `location`
 - `Acut_Malnutrition` as a fallback for `disease_cases`
-- legacy `diarrhea_acute` and `diarrhea_persistent`, which are combined into `diarrhea`
+- legacy `diarrhea_acute` and `diarrhea_persistent`, which are combined into `diarrhea_u5`
+- common aliases for the U5 clinical covariates, `screened_u5`, `population_u5`, and `reporting_rate`, which are harmonized to the canonical covariate names
 
 ### Missing covariate handling
 
@@ -186,8 +191,9 @@ The CHAP and Streamlit pipelines now use the same rule-based missing-data workfl
 
 - GAM target values are not imputed for training
 - climate covariates are interpolated within district/location, then filled from district/location-month medians, then district/location medians
-- child-health covariates use a 1-month forward fill, then district/location-month medians, then district/location medians
-- `population` uses within-district/location forward fill and back fill before median fallback
+- child-health and service-volume covariates use a 1-month forward fill, then district/location-month medians, then district/location medians
+- `reporting_rate` uses a 1-month forward fill, then district/location-month medians, then district/location medians, and is clipped to `0-1`
+- `population_u5` uses within-district/location forward fill and back fill before median fallback
 - each modeled covariate also generates a companion `*_missing` feature so the model can learn whether the original value was observed or imputed
 
 For CHAP prediction inputs, if a future covariate column is omitted entirely, the model treats it as missing rather than forcing it to zero.
@@ -196,11 +202,31 @@ For CHAP prediction inputs, if a future covariate column is omitted entirely, th
 
 Modeled covariates and GAM targets are handled differently:
 
-- impossible covariate values are converted to missing before preprocessing, for example negative child-health counts, non-positive `population`, negative `rainfall`, negative `average_gpp`, or humidity outside `0-100`
+- impossible covariate values are converted to missing before preprocessing, for example negative child-health counts, non-positive `population_u5`, negative `rainfall`, negative `average_gpp`, humidity outside `0-100`, or reporting rates outside `0-100`
 - extreme modeled covariates are capped within district/location using a robust median plus/minus `5 * MAD` rule, and each modeled covariate also gets a companion `*_outlier` indicator
 - GAM targets are not winsorized by default, because true spikes may be the signal of interest
 - impossible GAM target values such as negative caseloads are converted to missing and excluded from training
 - GAM target QC is tracked with `target_outlier_qc` and `target_duplicate_qc` flags so suspicious spikes or duplicate district-month observations can be reviewed without flattening the target series
+
+### Target proxy status
+
+Proxy target creation is now active in the training pipeline for rows where GAM is missing.
+
+- observed GAM remains the preferred target whenever it is available
+- if GAM is missing, the pipeline can build:
+  - `gam_proxy_screened` from `screened_u5`
+  - `gam_proxy_sam_admissions` from `sam_admissions_u5`
+  - `gam_proxy_combined` as the default blended proxy target
+- proxy calibration is causal: each month only uses earlier observed history, never future months or same-month peers
+- `reporting_rate` is used to adjust `screened_u5` and `sam_admissions_u5` before proxy calculation, with a conservative floor to avoid extreme inflation
+- provenance fields are generated:
+  - `target_source`
+  - `target_proxy_confidence`
+  - `target_is_observed`
+  - `target_training_weight`
+- proxy-filled rows can be used for model training, but with lower training weights than observed GAM rows
+- regression evaluation remains anchored on rows with observed GAM only
+- data-quality summaries and "Observed Anomalies & Operational Alert" maps now use observed GAM rows only
 
 ### Output schema
 
@@ -212,6 +238,21 @@ The `predict` entrypoint writes a CHAP-compatible CSV with:
 
 Each `sample_*` column is one forecast draw derived from the fitted random forest, which allows CHAP to calculate uncertainty intervals.
 
+### Current CHAP and Modeling App setup
+
+For the simpler first version, use the default CHAP output mode in production:
+
+| CHAP / Modeling App parameter today | Source from this model | Notes |
+|---|---|---|
+| `Quantile high` | derived by CHAP from `sample_*` | standard CHAP import path |
+| `Quantile mid high` | derived by CHAP from `sample_*` | standard CHAP import path |
+| `Median` | derived by CHAP from `sample_*` | standard CHAP import path |
+| `Quantile mid low` | derived by CHAP from `sample_*` | standard CHAP import path |
+| `Quantile low` | derived by CHAP from `sample_*` | standard CHAP import path |
+| `Outbreak indicator` | derived by CHAP from imported quantiles plus alert probability | this is the current alert channel in CHAP, not a direct import of `Operational_Alert` |
+
+This means the current CHAP / DHIS2 workflow works without a frontend fork, but it does not yet expose dedicated setup fields for `wd_risk`, `xd_risk`, `Operational_Alert`, `Operational_Alert_Why`, or `Composite_Risk`.
+
 Optional enriched CHAP output is also available when needed for downstream testing:
 
 - set `CHAP_INCLUDE_RISK_OUTPUT=1` when using `predict.py`; or
@@ -221,12 +262,60 @@ When enabled, the prediction CSV appends:
 
 - `point_forecast`
 - `wd_risk`
+- `wd_risk_code`
 - `xd_risk`
+- `xd_risk_code`
 - `Operational_Alert`
+- `Operational_Alert_Code`
 - `Operational_Alert_Why`
 - `Composite_Risk`
+- `Composite_Risk_Code`
 
-This keeps the default CHAP sample output unchanged while allowing risk-label and operational-alert testing in environments that can tolerate extra columns.
+Recommended numeric coding for DHIS2:
+
+- `Operational_Alert_Code`: `0 = No Data`, `1 = Monitor`, `2 = Alert`, `3 = Respond`
+- `wd_risk_code` and `xd_risk_code`: `0 = No Data`, `1 = Low`, `2 = Moderate`, `3 = High`, `4 = Extreme`
+
+This keeps the default CHAP sample output unchanged while allowing risk-label and operational-alert testing in environments that can tolerate extra columns. These extra columns are useful for local QA, exports, and future Modeling App fork work, but they are not part of the simple production import contract today.
+
+### No-fork Operational Alert workaround
+
+If you need to use the existing `Outbreak indicator` slot without forking the Modeling App, enable the workaround mode:
+
+- CLI: `python chap_model.py predict ... --outbreak-indicator-mode operational_alert_code`
+- env var: `CHAP_OUTBREAK_INDICATOR_MODE=operational_alert_code`
+
+When this mode is enabled, CHAP appends:
+
+- `outbreak_indicator`
+- `outbreak_indicator_label`
+
+Workaround semantics:
+
+- `outbreak_indicator = Operational_Alert_Code`
+- `0 = No Data`
+- `1 = Monitor`
+- `2 = Alert`
+- `3 = Respond`
+
+This is a pragmatic compatibility workaround. It repurposes the outbreak-indicator channel from a binary outbreak signal into a 4-state operational-alert code, so downstream users should treat it as `Operational Alert`, not as the original binary outbreak flag.
+
+### Smallest Modeling App fork for Operational Alert
+
+This repo does not contain the Modeling App source, so that UI/import change still has to be done in the separate app. The smallest fork is:
+
+| Layer | Smallest change |
+|---|---|
+| Prediction setup modal | add a new mapping field named `Operational Alert` |
+| Saved setup schema | store the selected DHIS2 data element for `Operational_Alert_Code` |
+| Import payload builder | send `Operational_Alert_Code` from enriched CHAP output to DHIS2 |
+| DHIS2 metadata | create one numeric data element for the alert code |
+
+Recommended first implementation:
+
+- map `Operational_Alert_Code`, not free text
+- keep the existing quantile and outbreak-indicator mappings unchanged
+- enable enriched CHAP output only in the forked path that knows how to import the extra field
 
 ### Local smoke-test example
 
@@ -236,6 +325,7 @@ Once dependencies are installed, the CHAP path can be exercised locally with:
 python train.py /path/to/train.csv /tmp/model.pkl
 python predict.py /tmp/model.pkl /path/to/historic.csv /path/to/future.csv /tmp/predictions.csv
 CHAP_INCLUDE_RISK_OUTPUT=1 python predict.py /tmp/model.pkl /path/to/historic.csv /path/to/future.csv /tmp/predictions_with_risk.csv
+CHAP_OUTBREAK_INDICATOR_MODE=operational_alert_code python predict.py /tmp/model.pkl /path/to/historic.csv /path/to/future.csv /tmp/predictions_with_outbreak_workaround.csv
 ```
 
 ## Installation
@@ -303,11 +393,14 @@ When a GeoJSON is provided, the app asks you to select the district name column 
 | `rainfall` | Rainfall |
 | `mean_relative_humidity` | Relative humidity |
 | `average_gpp` | Vegetation productivity |
-| `malaria_confirmed` | Malaria cases among children under 5 |
-| `pneumonia_cases` | Pneumonia cases among children under 5 |
-| `diarrhea` | Diarrhoea cases among children under 5 |
+| `malaria_confirmed_u5` | Malaria cases among children under 5 |
+| `pneumonia_cases_u5` | Pneumonia cases among children under 5 |
+| `diarrhea_u5` | Diarrhoea cases among children under 5 |
 | `low_birth_weight_babies` | Low birth weight newborns |
-| `population` | District under-5 population |
+| `sam_admissions_u5` | SAM admissions among children under 5 |
+| `screened_u5` | Under-5 nutrition screening or assessment volume |
+| `reporting_rate` | District health-facility reporting rate, accepted as `0-1` or `0-100` |
+| `population_u5` | District under-5 population |
 
 Missing values in these covariates are handled internally using the rule-based workflow described above. The model also creates missingness and outlier indicator features for each modeled covariate.
 
@@ -337,7 +430,7 @@ Forecast anomaly labels and operational alerts are derived from the regression f
 
 The model pipeline uses:
 
-- climate covariates plus under-5 disease and population covariates
+- climate covariates plus under-5 disease, service-delivery, reporting-quality, and population covariates
 - lagged values
 - rolling summaries
 - seasonality features

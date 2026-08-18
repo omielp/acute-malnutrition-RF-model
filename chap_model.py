@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 
 
-MODEL_VERSION = "chap-rf-v6"
+MODEL_VERSION = "chap-rf-v9"
 RISK_LEVELS = ["Low", "Moderate", "High", "Extreme"]
 RISK_ORDER = {
     "Low": 0,
@@ -16,6 +16,20 @@ RISK_ORDER = {
     "High": 2,
     "Extreme": 3,
 }
+RISK_EXPORT_ORDER = {
+    "No Data": 0,
+    "Low": 1,
+    "Moderate": 2,
+    "High": 3,
+    "Extreme": 4,
+}
+OPERATIONAL_ALERT_EXPORT_ORDER = {
+    "No Data": 0,
+    "Monitor": 1,
+    "Alert": 2,
+    "Respond": 3,
+}
+OUTBREAK_INDICATOR_MODES = {"none", "operational_alert_code"}
 LEGACY_DIARRHEA_COVARIATES = ("diarrhea_acute", "diarrhea_persistent")
 CLIMATE_COVARIATES = [
     "mean_temperature",
@@ -24,15 +38,19 @@ CLIMATE_COVARIATES = [
     "average_gpp",
 ]
 CHILD_HEALTH_COVARIATES = [
-    "malaria_confirmed",
-    "pneumonia_cases",
-    "diarrhea",
+    "malaria_confirmed_u5",
+    "pneumonia_cases_u5",
+    "diarrhea_u5",
     "low_birth_weight_babies",
+    "sam_admissions_u5",
+    "screened_u5",
 ]
-SLOW_MOVING_COVARIATES = ["population"]
+RATE_COVARIATES = ["reporting_rate"]
+SLOW_MOVING_COVARIATES = ["population_u5"]
 DEFAULT_COVARIATES = [
     *CLIMATE_COVARIATES,
     *CHILD_HEALTH_COVARIATES,
+    *RATE_COVARIATES,
     *SLOW_MOVING_COVARIATES,
 ]
 SKEWED_COVARIATES = {
@@ -47,11 +65,59 @@ LAGGED_EXOG_COVARIATES = [
     "rainfall",
     "mean_relative_humidity",
     "average_gpp",
-    "malaria_confirmed",
-    "pneumonia_cases",
-    "diarrhea",
+    "malaria_confirmed_u5",
+    "pneumonia_cases_u5",
+    "diarrhea_u5",
     "low_birth_weight_babies",
+    "sam_admissions_u5",
+    "screened_u5",
+    "reporting_rate",
 ]
+COVARIATE_ALIASES = {
+    "malaria_confirmed_u5": (
+        "malaria_confirmed_u5",
+        "malaria_confirmed",
+    ),
+    "pneumonia_cases_u5": (
+        "pneumonia_cases_u5",
+        "pneumonia_cases",
+    ),
+    "diarrhea_u5": (
+        "diarrhea_u5",
+        "diarrhea",
+        *LEGACY_DIARRHEA_COVARIATES,
+    ),
+    "sam_admissions_u5": (
+        "sam_admissions_u5",
+        "sam_admissions",
+        "sam_admission",
+        "sam_cases_admitted",
+        "sam_admitted",
+    ),
+    "screened_u5": (
+        "screened_u5",
+        "screening_assessment",
+        "screening_assessments",
+        "screened_children",
+        "children_screened",
+        "number_screened",
+        "screening_assessment_u5",
+    ),
+    "population_u5": (
+        "population_u5",
+        "population",
+        "under5population",
+        "u5population",
+    ),
+    "reporting_rate": (
+        "reporting_rate",
+        "facility_reporting_rate",
+        "district_reporting_rate",
+        "reporting_completeness",
+        "reporting_completeness_pct",
+        "hf_reporting_rate",
+    ),
+}
 BASE_FEATURES = [
     "Month",
     "Quarter",
@@ -86,6 +152,16 @@ SCALED_FEATURES = [
     "Lag1_Over_P95",
 ]
 N_SAMPLES = 100
+REPORTING_RATE_FLOOR = 0.6
+PROXY_SCREEN_WEIGHT = 0.7
+PROXY_SAM_WEIGHT = 0.3
+PROXY_SOURCE_BASE_WEIGHTS = {
+    "observed": 1.0,
+    "proxy_combined": 0.6,
+    "proxy_screened": 0.5,
+    "proxy_sam_admissions": 0.35,
+    "missing": 0.0,
+}
 
 
 def parse_time_period(value: str) -> pd.Timestamp:
@@ -146,6 +222,24 @@ def explain_operational_alert(
     return "Operational alert unavailable because one or both anomaly classifications are missing."
 
 
+def encode_risk_level(value: str) -> int:
+    return int(RISK_EXPORT_ORDER.get(str(value), 0))
+
+
+def encode_operational_alert(value: str) -> int:
+    return int(OPERATIONAL_ALERT_EXPORT_ORDER.get(str(value), 0))
+
+
+def normalize_outbreak_indicator_mode(value: str | None) -> str:
+    mode = str(value or "none").strip().lower()
+    if mode not in OUTBREAK_INDICATOR_MODES:
+        raise ValueError(
+            f"Unsupported outbreak indicator mode '{value}'. "
+            f"Supported modes: {sorted(OUTBREAK_INDICATOR_MODES)}"
+        )
+    return mode
+
+
 def env_flag_true(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
@@ -176,7 +270,10 @@ def sanitize_covariate_values(name: str, values: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(values, errors="coerce")
     if name in COUNT_COVARIATES:
         return numeric.mask(numeric < 0)
-    if name == "population":
+    if name == "reporting_rate":
+        numeric = numeric.mask((numeric < 0) | (numeric > 100))
+        return numeric.where(numeric <= 1, numeric / 100.0)
+    if name == "population_u5":
         return numeric.mask(numeric <= 0)
     if name == "rainfall":
         return numeric.mask(numeric < 0)
@@ -232,6 +329,147 @@ def add_target_qc_flags(df: pd.DataFrame, group_col: str, target_col: str) -> pd
     return df
 
 
+def effective_reporting_rate(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").clip(lower=0, upper=1)
+    numeric = numeric.where(numeric > 0)
+    return numeric.fillna(1.0).clip(lower=REPORTING_RATE_FLOOR, upper=1.0)
+
+
+def _median_or_nan(history: list[float]) -> float:
+    if not history:
+        return np.nan
+    return float(np.median(np.asarray(history, dtype=float)))
+
+
+def fill_group_month_median(
+    df: pd.DataFrame,
+    values: pd.Series,
+    group_col: str,
+    date_col: str,
+) -> pd.Series:
+    ordered = df.sort_values([date_col, group_col]).copy()
+    filled = pd.Series(np.nan, index=df.index, dtype="float64")
+    group_month_history: dict[tuple[str, int], list[float]] = {}
+    group_history: dict[str, list[float]] = {}
+    global_history: list[float] = []
+
+    for current_date, batch in ordered.groupby(date_col, sort=True):
+        batch_index = list(batch.index)
+        for idx in batch_index:
+            group_key = str(ordered.loc[idx, group_col])
+            month_key = int(pd.Timestamp(current_date).month)
+            estimate = _median_or_nan(group_month_history.get((group_key, month_key), []))
+            if pd.isna(estimate):
+                estimate = _median_or_nan(group_history.get(group_key, []))
+            if pd.isna(estimate):
+                estimate = _median_or_nan(global_history)
+            filled.loc[idx] = estimate
+
+        for idx in batch_index:
+            value = pd.to_numeric(values.loc[idx], errors="coerce")
+            if pd.isna(value):
+                continue
+            group_key = str(ordered.loc[idx, group_col])
+            month_key = int(pd.Timestamp(current_date).month)
+            group_month_history.setdefault((group_key, month_key), []).append(float(value))
+            group_history.setdefault(group_key, []).append(float(value))
+            global_history.append(float(value))
+
+    return filled
+
+
+def add_target_proxy_columns(
+    df: pd.DataFrame,
+    target_col: str,
+    group_col: str,
+    date_col: str,
+) -> pd.DataFrame:
+    df = df.copy()
+    observed = pd.to_numeric(df[target_col], errors="coerce")
+    reporting_rate = (
+        pd.to_numeric(df["reporting_rate"], errors="coerce")
+        if "reporting_rate" in df.columns
+        else pd.Series(1.0, index=df.index, dtype="float64")
+    )
+    effective_rate = effective_reporting_rate(reporting_rate)
+    screened = pd.to_numeric(df["screened_u5"], errors="coerce") if "screened_u5" in df.columns else pd.Series(np.nan, index=df.index, dtype="float64")
+    sam = pd.to_numeric(df["sam_admissions_u5"], errors="coerce") if "sam_admissions_u5" in df.columns else pd.Series(np.nan, index=df.index, dtype="float64")
+
+    screened_adjusted = screened / effective_rate
+    sam_adjusted = sam / effective_rate
+
+    screened_ratio_source = (observed / screened_adjusted.replace(0, np.nan)).where(observed.notna() & screened_adjusted.gt(0))
+    sam_ratio_source = (observed / sam_adjusted.replace(0, np.nan)).where(observed.notna() & sam_adjusted.gt(0))
+
+    screened_ratio = fill_group_month_median(df, screened_ratio_source, group_col, date_col)
+    sam_ratio = fill_group_month_median(df, sam_ratio_source, group_col, date_col)
+
+    gam_proxy_screened = (screened_adjusted * screened_ratio).where(screened_adjusted.gt(0)).clip(lower=0)
+    gam_proxy_sam_admissions = (sam_adjusted * sam_ratio).where(sam_adjusted.gt(0)).clip(lower=0)
+
+    gam_proxy_combined = pd.Series(np.nan, index=df.index, dtype="float64")
+    both = gam_proxy_screened.notna() & gam_proxy_sam_admissions.notna()
+    only_screened = gam_proxy_screened.notna() & ~gam_proxy_sam_admissions.notna()
+    only_sam = gam_proxy_sam_admissions.notna() & ~gam_proxy_screened.notna()
+    gam_proxy_combined.loc[both] = (
+        PROXY_SCREEN_WEIGHT * gam_proxy_screened.loc[both]
+        + PROXY_SAM_WEIGHT * gam_proxy_sam_admissions.loc[both]
+    )
+    gam_proxy_combined.loc[only_screened] = gam_proxy_screened.loc[only_screened]
+    gam_proxy_combined.loc[only_sam] = gam_proxy_sam_admissions.loc[only_sam]
+
+    target_source = pd.Series("missing", index=df.index, dtype="object")
+    target_source.loc[only_sam] = "proxy_sam_admissions"
+    target_source.loc[only_screened] = "proxy_screened"
+    target_source.loc[both] = "proxy_combined"
+    target_source.loc[observed.notna()] = "observed"
+
+    reporting_for_conf = reporting_rate.fillna(1.0)
+    sam_mask = target_source.eq("proxy_sam_admissions")
+    screened_mask = target_source.eq("proxy_screened")
+    combined_mask = target_source.eq("proxy_combined")
+    target_proxy_confidence = pd.Series("No Data", index=df.index, dtype="object")
+    target_proxy_confidence.loc[observed.notna()] = "Observed"
+    target_proxy_confidence.loc[sam_mask] = "Low"
+    target_proxy_confidence.loc[screened_mask] = np.where(
+        reporting_for_conf.loc[screened_mask].ge(0.8),
+        "Medium",
+        "Low",
+    )
+    target_proxy_confidence.loc[combined_mask] = np.where(
+        reporting_for_conf.loc[combined_mask].ge(0.8),
+        "High",
+        np.where(reporting_for_conf.loc[combined_mask].ge(0.6), "Medium", "Low"),
+    )
+
+    report_weight_factor = pd.Series(
+        np.where(
+            reporting_for_conf.ge(0.8),
+            1.0,
+            np.where(reporting_for_conf.ge(0.6), 0.85, 0.7),
+        ),
+        index=df.index,
+        dtype="float64",
+    )
+    target_training_weight = target_source.map(PROXY_SOURCE_BASE_WEIGHTS).astype(float)
+    proxy_mask = target_source.ne("observed")
+    target_training_weight.loc[proxy_mask] = target_training_weight.loc[proxy_mask] * report_weight_factor.loc[proxy_mask]
+
+    df[f"{target_col}_observed"] = observed
+    df["effective_reporting_rate"] = effective_rate
+    df["screened_u5_adjusted"] = screened_adjusted
+    df["sam_admissions_u5_adjusted"] = sam_adjusted
+    df["gam_proxy_screened"] = gam_proxy_screened
+    df["gam_proxy_sam_admissions"] = gam_proxy_sam_admissions
+    df["gam_proxy_combined"] = gam_proxy_combined
+    df["target_source"] = target_source
+    df["target_proxy_confidence"] = target_proxy_confidence
+    df["target_is_observed"] = observed.notna().astype(float)
+    df["target_training_weight"] = target_training_weight
+    df[target_col] = observed.fillna(gam_proxy_combined)
+    return df
+
+
 def covariate_lag_feature_names(available_columns: list[str] | set[str]) -> list[str]:
     available = set(available_columns)
     names = []
@@ -272,6 +510,12 @@ def impute_modeled_covariates(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].fillna(_location_median(df, col))
         df[col] = _fill_remaining(df[col]).clip(lower=0)
 
+    for col in [covariate for covariate in RATE_COVARIATES if covariate in df.columns]:
+        df[col] = df.groupby("location")[col].transform(lambda series: series.ffill(limit=1))
+        df[col] = df[col].fillna(_location_month_median(df, col))
+        df[col] = df[col].fillna(_location_median(df, col))
+        df[col] = _fill_remaining(df[col]).clip(lower=0, upper=1)
+
     for col in [covariate for covariate in SLOW_MOVING_COVARIATES if covariate in df.columns]:
         df[col] = df.groupby("location")[col].transform(lambda series: series.ffill().bfill())
         df[col] = df[col].fillna(_location_median(df, col))
@@ -281,8 +525,8 @@ def impute_modeled_covariates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def resolve_covariate_series(df: pd.DataFrame, covariate: str) -> pd.Series | None:
-    if covariate == "diarrhea":
-        source = pick_column(df, [covariate])
+    if covariate == "diarrhea_u5":
+        source = pick_column(df, [covariate, "diarrhea"])
         if source is not None:
             return pd.to_numeric(df[source], errors="coerce")
 
@@ -300,7 +544,7 @@ def resolve_covariate_series(df: pd.DataFrame, covariate: str) -> pd.Series | No
         )
         return legacy_values.sum(axis=1, min_count=1)
 
-    source = pick_column(df, [covariate])
+    source = pick_column(df, [covariate, *COVARIATE_ALIASES.get(covariate, ())])
     if source is None:
         return None
     return pd.to_numeric(df[source], errors="coerce")
@@ -361,6 +605,8 @@ def normalize_dataframe(df: pd.DataFrame, require_target: bool) -> pd.DataFrame:
     norm = norm.sort_values(["location", "Date"]).reset_index(drop=True)
     norm = add_target_qc_flags(norm, group_col="location", target_col="disease_cases")
     norm = impute_modeled_covariates(norm)
+    if require_target:
+        norm = add_target_proxy_columns(norm, target_col="disease_cases", group_col="location", date_col="Date")
     for covariate in covariates:
         norm[covariate] = log_transform_covariate(covariate, norm[covariate])
     if require_target:
@@ -488,6 +734,9 @@ def build_training_features(df: pd.DataFrame, covariate_cols: list[str]) -> tupl
                 "Lag1_Over_P95": float(hist[-1] - hist_p95),
                 "Lag1_Ratio_P95": float(hist[-1] / (hist_p95 + 1e-6)),
                 "Target": float(cases[i]),
+                "Target_Observed": float(location_df.loc[i, "disease_cases_observed"]) if pd.notna(location_df.loc[i, "disease_cases_observed"]) else np.nan,
+                "Target_Is_Observed": float(location_df.loc[i, "target_is_observed"]) if "target_is_observed" in location_df.columns else 1.0,
+                "Target_Training_Weight": float(location_df.loc[i, "target_training_weight"]) if "target_training_weight" in location_df.columns else 1.0,
                 "Target_Transformed": float((target_log[i - 3] - target_mean) / target_std),
             }
             for covariate in covariate_cols:
@@ -535,7 +784,12 @@ def train_model(train_data_path: str, model_path: str) -> None:
     feature_df, feature_cols, scalers = build_training_features(df, covariate_cols)
 
     model = make_regressor()
-    model.fit(feature_df[feature_cols].to_numpy(), feature_df["Target_Transformed"].to_numpy())
+    sample_weight = feature_df["Target_Training_Weight"].fillna(1.0).to_numpy() if "Target_Training_Weight" in feature_df.columns else None
+    model.fit(
+        feature_df[feature_cols].to_numpy(),
+        feature_df["Target_Transformed"].to_numpy(),
+        sample_weight=sample_weight,
+    )
 
     artifact = {
         "model_version": MODEL_VERSION,
@@ -583,7 +837,11 @@ def build_prediction_rows(
     future_df: pd.DataFrame,
     model_artifact: dict,
     include_risk_output: bool = False,
+    outbreak_indicator_mode: str = "none",
 ) -> pd.DataFrame:
+    outbreak_indicator_mode = normalize_outbreak_indicator_mode(outbreak_indicator_mode)
+    include_outbreak_workaround = outbreak_indicator_mode == "operational_alert_code"
+    compute_risk_outputs = include_risk_output or include_outbreak_workaround
     model = model_artifact["model"]
     covariate_cols = model_artifact["covariate_cols"]
     feature_cols = model_artifact["feature_cols"]
@@ -691,48 +949,80 @@ def build_prediction_rows(
                     known_covariates[covariate] = next_value
                 covariate_histories.setdefault(covariate, []).append(next_value)
 
+            if compute_risk_outputs:
+                wd_risk = classify_risk(point_forecast, hist_p50, hist_p75, hist_p90, hist_p95)
+            else:
+                wd_risk = "No Data"
+
             row = {
                 "time_period": str(future_row["time_period"]),
                 "location": location,
+                "_point_forecast_internal": point_forecast,
+                "_wd_risk_internal": wd_risk,
             }
             row.update({f"sample_{index}": float(samples[index]) for index in range(len(samples))})
-            if include_risk_output:
-                wd_risk = classify_risk(point_forecast, hist_p50, hist_p75, hist_p90, hist_p95)
-                row.update(
-                    {
-                        "point_forecast": point_forecast,
-                        "wd_risk": wd_risk,
-                        "xd_risk": "No Data",
-                        "Operational_Alert": "No Data",
-                        "Operational_Alert_Why": "",
-                        "Composite_Risk": "No Data",
-                    }
-                )
+            if compute_risk_outputs:
+                row["_wd_risk_internal"] = wd_risk
+                if include_risk_output:
+                    row.update(
+                        {
+                            "point_forecast": point_forecast,
+                            "wd_risk": wd_risk,
+                            "wd_risk_code": encode_risk_level(wd_risk),
+                            "xd_risk": "No Data",
+                            "xd_risk_code": 0,
+                            "Operational_Alert": "No Data",
+                            "Operational_Alert_Code": 0,
+                            "Operational_Alert_Why": "",
+                            "Composite_Risk": "No Data",
+                            "Composite_Risk_Code": 0,
+                        }
+                    )
+                if include_outbreak_workaround:
+                    row.update(
+                        {
+                            "outbreak_indicator": 0,
+                            "outbreak_indicator_label": "No Data",
+                        }
+                    )
             rows.append(row)
 
     if not rows:
         raise ValueError("No predictions were generated. Check that future locations exist in the historic/training data and each has at least 3 observations.")
     predictions = pd.DataFrame(rows)
-    if not include_risk_output or predictions.empty:
+    if not compute_risk_outputs or predictions.empty:
         return predictions
 
     for time_period in predictions["time_period"].unique():
         mask = predictions["time_period"] == time_period
-        point_forecasts = predictions.loc[mask, "point_forecast"].to_numpy(dtype=float)
+        point_forecasts = predictions.loc[mask, "_point_forecast_internal"].to_numpy(dtype=float)
         if len(point_forecasts) >= 3:
             xd_p50, xd_p75, xd_p90, xd_p95 = np.percentile(point_forecasts, [50, 75, 90, 95])
         else:
             xd_p50, xd_p75, xd_p90, xd_p95 = np.percentile(all_hist_vals, [50, 75, 90, 95])
         for idx in predictions[mask].index:
-            point_forecast = float(predictions.loc[idx, "point_forecast"])
+            point_forecast = float(predictions.loc[idx, "_point_forecast_internal"])
+            if include_risk_output:
+                wd_risk = str(predictions.loc[idx, "wd_risk"])
+            else:
+                wd_risk = str(predictions.loc[idx, "_wd_risk_internal"])
             xd_risk = classify_risk(point_forecast, xd_p50, xd_p75, xd_p90, xd_p95)
-            wd_risk = str(predictions.loc[idx, "wd_risk"])
             operational_alert = derive_operational_alert(wd_risk, xd_risk)
-            predictions.loc[idx, "xd_risk"] = xd_risk
-            predictions.loc[idx, "Operational_Alert"] = operational_alert
-            predictions.loc[idx, "Operational_Alert_Why"] = explain_operational_alert(wd_risk, xd_risk)
-            predictions.loc[idx, "Composite_Risk"] = operational_alert
+            if include_risk_output:
+                predictions.loc[idx, "xd_risk"] = xd_risk
+                predictions.loc[idx, "xd_risk_code"] = encode_risk_level(xd_risk)
+                predictions.loc[idx, "Operational_Alert"] = operational_alert
+                predictions.loc[idx, "Operational_Alert_Code"] = encode_operational_alert(operational_alert)
+                predictions.loc[idx, "Operational_Alert_Why"] = explain_operational_alert(wd_risk, xd_risk)
+                predictions.loc[idx, "Composite_Risk"] = operational_alert
+                predictions.loc[idx, "Composite_Risk_Code"] = encode_operational_alert(operational_alert)
+            if include_outbreak_workaround:
+                predictions.loc[idx, "outbreak_indicator"] = encode_operational_alert(operational_alert)
+                predictions.loc[idx, "outbreak_indicator_label"] = operational_alert
 
+    predictions = predictions.drop(
+        columns=[col for col in ["_point_forecast_internal", "_wd_risk_internal"] if col in predictions.columns]
+    )
     return predictions
 
 
@@ -742,9 +1032,12 @@ def predict_model(
     future_data_path: str,
     output_path: str,
     include_risk_output: bool | None = None,
+    outbreak_indicator_mode: str | None = None,
 ) -> None:
     if include_risk_output is None:
         include_risk_output = env_flag_true("CHAP_INCLUDE_RISK_OUTPUT")
+    if outbreak_indicator_mode is None:
+        outbreak_indicator_mode = os.getenv("CHAP_OUTBREAK_INDICATOR_MODE", "none")
     with open(model_path, "rb") as file_obj:
         artifact = pickle.load(file_obj)
 
@@ -765,6 +1058,7 @@ def predict_model(
         future_df,
         artifact,
         include_risk_output=include_risk_output,
+        outbreak_indicator_mode=outbreak_indicator_mode,
     )
     predictions.to_csv(output_path, index=False)
 
@@ -787,6 +1081,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Append point forecast, risk labels, and operational alert columns to the CHAP prediction output.",
     )
+    predict_parser.add_argument(
+        "--outbreak-indicator-mode",
+        choices=sorted(OUTBREAK_INDICATOR_MODES),
+        default="none",
+        help="Optionally repurpose the outbreak_indicator output as Operational_Alert_Code for no-fork DHIS2 imports.",
+    )
     return parser
 
 
@@ -807,6 +1107,7 @@ def main() -> None:
             args.future_data,
             args.out_file,
             include_risk_output=args.include_risk_output,
+            outbreak_indicator_mode=args.outbreak_indicator_mode,
         )
         return
 
