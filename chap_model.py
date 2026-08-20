@@ -252,20 +252,6 @@ def log_transform_covariate(name: str, values: pd.Series) -> pd.Series:
     return numeric
 
 
-def _location_month_median(df: pd.DataFrame, value_col: str) -> pd.Series:
-    return df.groupby(["location", df["Date"].dt.month])[value_col].transform("median")
-
-
-def _location_median(df: pd.DataFrame, value_col: str) -> pd.Series:
-    return df.groupby("location")[value_col].transform("median")
-
-
-def _fill_remaining(series: pd.Series) -> pd.Series:
-    median_value = series.median(skipna=True)
-    fill_value = 0.0 if pd.isna(median_value) else float(median_value)
-    return series.fillna(fill_value)
-
-
 def sanitize_covariate_values(name: str, values: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(values, errors="coerce")
     if name in COUNT_COVARIATES:
@@ -306,6 +292,39 @@ def cap_outliers_by_group(df: pd.DataFrame, group_col: str, value_col: str) -> t
         clipped, group_flags = _cap_series_with_mad(df.loc[index, value_col])
         capped.loc[index] = clipped
         flags.loc[index] = group_flags.astype(float)
+    return capped, flags
+
+
+def cap_outliers_causally(df: pd.DataFrame, group_col: str, date_col: str, value_col: str) -> tuple[pd.Series, pd.Series]:
+    """Cap a row using only earlier observations from its location."""
+    ordered = df.sort_values([date_col, group_col]).copy()
+    capped = pd.Series(np.nan, index=df.index, dtype="float64")
+    flags = pd.Series(0.0, index=df.index, dtype="float64")
+    history: dict[str, list[float]] = {}
+
+    for _, batch in ordered.groupby(date_col, sort=True):
+        for idx in batch.index:
+            value = pd.to_numeric(df.loc[idx, value_col], errors="coerce")
+            group_key = str(df.loc[idx, group_col])
+            prior_values = pd.Series(history.get(group_key, []), dtype="float64").dropna()
+            if pd.isna(value) or len(prior_values) < 4:
+                capped.loc[idx] = value
+                continue
+            median = float(prior_values.median())
+            mad = float((prior_values - median).abs().median())
+            if mad < 1e-6:
+                capped.loc[idx] = value
+                continue
+            lower = median - 5.0 * mad
+            upper = median + 5.0 * mad
+            flags.loc[idx] = float(value < lower or value > upper)
+            capped.loc[idx] = float(np.clip(value, lower, upper))
+
+        for idx in batch.index:
+            value = pd.to_numeric(df.loc[idx, value_col], errors="coerce")
+            if pd.notna(value):
+                history.setdefault(str(df.loc[idx, group_col]), []).append(float(value))
+
     return capped, flags
 
 
@@ -494,32 +513,27 @@ def impute_modeled_covariates(df: pd.DataFrame) -> pd.DataFrame:
         values = sanitize_covariate_values(col, df[col])
         df[col] = values
         df[f"{col}{MISSING_FLAG_SUFFIX}"] = values.isna().astype(float)
-        df[col], df[f"{col}{OUTLIER_FLAG_SUFFIX}"] = cap_outliers_by_group(df, "location", col)
+        df[col], df[f"{col}{OUTLIER_FLAG_SUFFIX}"] = cap_outliers_causally(df, "location", "Date", col)
 
     for col in [covariate for covariate in CLIMATE_COVARIATES if covariate in df.columns]:
-        df[col] = df.groupby("location")[col].transform(
-            lambda series: series.interpolate(method="linear", limit_direction="both")
-        )
-        df[col] = df[col].fillna(_location_month_median(df, col))
-        df[col] = df[col].fillna(_location_median(df, col))
-        df[col] = _fill_remaining(df[col])
+        df[col] = df.groupby("location")[col].transform(lambda series: series.ffill(limit=1))
+        df[col] = df[col].fillna(fill_group_month_median(df, df[col], "location", "Date"))
+        df[col] = df[col].fillna(0.0)
 
     for col in [covariate for covariate in CHILD_HEALTH_COVARIATES if covariate in df.columns]:
         df[col] = df.groupby("location")[col].transform(lambda series: series.ffill(limit=1))
-        df[col] = df[col].fillna(_location_month_median(df, col))
-        df[col] = df[col].fillna(_location_median(df, col))
-        df[col] = _fill_remaining(df[col]).clip(lower=0)
+        df[col] = df[col].fillna(fill_group_month_median(df, df[col], "location", "Date"))
+        df[col] = df[col].fillna(0.0).clip(lower=0)
 
     for col in [covariate for covariate in RATE_COVARIATES if covariate in df.columns]:
         df[col] = df.groupby("location")[col].transform(lambda series: series.ffill(limit=1))
-        df[col] = df[col].fillna(_location_month_median(df, col))
-        df[col] = df[col].fillna(_location_median(df, col))
-        df[col] = _fill_remaining(df[col]).clip(lower=0, upper=1)
+        df[col] = df[col].fillna(fill_group_month_median(df, df[col], "location", "Date"))
+        df[col] = df[col].fillna(0.0).clip(lower=0, upper=1)
 
     for col in [covariate for covariate in SLOW_MOVING_COVARIATES if covariate in df.columns]:
-        df[col] = df.groupby("location")[col].transform(lambda series: series.ffill().bfill())
-        df[col] = df[col].fillna(_location_median(df, col))
-        df[col] = _fill_remaining(df[col]).clip(lower=0)
+        df[col] = df.groupby("location")[col].transform(lambda series: series.ffill())
+        df[col] = df[col].fillna(fill_group_month_median(df, df[col], "location", "Date"))
+        df[col] = df[col].fillna(0.0).clip(lower=0)
 
     return df
 
@@ -991,7 +1005,9 @@ def build_prediction_rows(
         raise ValueError("No predictions were generated. Check that future locations exist in the historic/training data and each has at least 3 observations.")
     predictions = pd.DataFrame(rows)
     if not compute_risk_outputs or predictions.empty:
-        return predictions
+        return predictions.drop(
+            columns=[col for col in ["_point_forecast_internal", "_wd_risk_internal"] if col in predictions.columns]
+        )
 
     for time_period in predictions["time_period"].unique():
         mask = predictions["time_period"] == time_period

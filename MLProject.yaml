@@ -6,20 +6,6 @@ target: disease_cases
 min_prediction_length: 1
 max_prediction_length: 3
 
-required_covariates:
-  - mean_temperature
-  - rainfall
-  - mean_relative_humidity
-  - average_gpp
-  - malaria_confirmed_u5
-  - pneumonia_cases_u5
-  - diarrhea_u5
-  - low_birth_weight_babies
-  - sam_admissions_u5
-  - screened_u5
-  - reporting_rate
-  - population_u5
-
 entry_points:
   train:
     parameters:
@@ -49,7 +35,7 @@ meta_data:
     reporting-quality covariate, population_u5 as the under-5 denominator,
     and low_birth_weight_babies as a
     neonatal indicator within the same under-5 scope. Missing covariates are
-    imputed with rule-based
+    optional and are imputed with rule-based
     district-aware preprocessing, extreme modeled covariates are capped with
     robust thresholds, and suspicious target spikes are flagged for QC rather
     than clipped by default. Optional anomaly and operational-alert columns

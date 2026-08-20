@@ -93,20 +93,21 @@ Notes:
 Modeled covariates are handled with rule-based imputation rather than blanket row dropping or zero-filling:
 
 - the GAM target is not imputed for model training;
-- climate covariates are interpolated within district/location, then filled from district/location-month medians, then district/location medians;
-- child-health and service-delivery count covariates use a 1-month forward fill, then district/location-month medians, then district/location medians;
-- `reporting_rate` uses a 1-month forward fill, then district/location-month medians, then district/location medians, and is clipped to `0-1`;
-- `population_u5` is treated as a slow-moving denominator and uses forward fill plus back fill before median fallback;
+- climate covariates use a 1-month forward fill, then past-only district/location-month, district/location, and global medians;
+- child-health and service-delivery count covariates use a 1-month forward fill, then the same past-only fallback hierarchy;
+- `reporting_rate` uses a 1-month forward fill, then the same past-only fallback hierarchy, and is clipped to `0-1`;
+- `population_u5` is treated as a slow-moving denominator and uses past-only forward fill and fallback values;
 - each modeled covariate generates a companion `*_missing` feature so the model can distinguish observed values from imputed ones.
 
 In the CHAP path, if a future covariate column is absent from prediction input, it is treated as missing rather than being forced to zero.
+No preprocessing step uses a later time period to fill or cap an earlier one.
 
 ## Outlier Handling
 
 Modeled covariates are treated more aggressively than the GAM target:
 
 - impossible covariate values are converted to missing before imputation, including reporting rates outside `0-100`;
-- extreme modeled covariates are capped within district/location using a robust median plus/minus `5 * MAD` rule;
+- extreme modeled covariates are capped within district/location using a robust median plus/minus `5 * MAD` rule calculated from earlier observations only;
 - each modeled covariate generates a companion `*_outlier` feature so the model can distinguish typical values from capped extremes.
 
 This approach protects the model from obvious reporting artifacts without flattening the GAM target itself.

@@ -187,23 +187,22 @@ For backward compatibility with older datasets, the wrapper also accepts:
 
 ### Missing covariate handling
 
-The CHAP and Streamlit pipelines now use the same rule-based missing-data workflow for modeled covariates:
+The CHAP pipeline uses a causal, rule-based missing-data workflow for modeled covariates:
 
 - GAM target values are not imputed for training
-- climate covariates are interpolated within district/location, then filled from district/location-month medians, then district/location medians
-- child-health and service-volume covariates use a 1-month forward fill, then district/location-month medians, then district/location medians
-- `reporting_rate` uses a 1-month forward fill, then district/location-month medians, then district/location medians, and is clipped to `0-1`
-- `population_u5` uses within-district/location forward fill and back fill before median fallback
+- climate, child-health, service-volume, and reporting-rate covariates use a 1-month forward fill, then past-only district/location-month, district/location, and global medians; reporting rate is clipped to `0-1`
+- `population_u5` uses past-only forward fill and fallback values
 - each modeled covariate also generates a companion `*_missing` feature so the model can learn whether the original value was observed or imputed
 
 For CHAP prediction inputs, if a future covariate column is omitted entirely, the model treats it as missing rather than forcing it to zero.
+No CHAP preprocessing step uses a later time period to fill or cap an earlier row.
 
 ### Outlier and target handling
 
 Modeled covariates and GAM targets are handled differently:
 
 - impossible covariate values are converted to missing before preprocessing, for example negative child-health counts, non-positive `population_u5`, negative `rainfall`, negative `average_gpp`, humidity outside `0-100`, or reporting rates outside `0-100`
-- extreme modeled covariates are capped within district/location using a robust median plus/minus `5 * MAD` rule, and each modeled covariate also gets a companion `*_outlier` indicator
+- extreme modeled covariates are capped within district/location using a robust median plus/minus `5 * MAD` rule calculated from earlier observations only, and each modeled covariate also gets a companion `*_outlier` indicator
 - GAM targets are not winsorized by default, because true spikes may be the signal of interest
 - impossible GAM target values such as negative caseloads are converted to missing and excluded from training
 - GAM target QC is tracked with `target_outlier_qc` and `target_duplicate_qc` flags so suspicious spikes or duplicate district-month observations can be reviewed without flattening the target series
