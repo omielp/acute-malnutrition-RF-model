@@ -2,6 +2,19 @@ name: acute_malnutrition_chap
 uv_env: pyproject.toml
 supported_period_type: month
 target: disease_cases
+required_covariates:
+  - mean_temperature
+  - rainfall
+  - mean_relative_humidity
+  - average_gpp
+  - malaria_confirmed_u5
+  - pneumonia_cases_u5
+  - diarrhea_u5
+  - low_birth_weight_babies
+  - sam_admissions_u5
+  - screened_u5
+  - reporting_rate
+  - population_u5
 
 min_prediction_length: 1
 max_prediction_length: 3
