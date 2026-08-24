@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 
 
-MODEL_VERSION = "chap-rf-v20-lean-direct-horizons"
+MODEL_VERSION = "chap-rf-v21-loosened-quality-history"
 RISK_LEVELS = ["Monitor", "Alert", "Respond"]
 RISK_ORDER = {
     "Monitor": 0,
@@ -117,8 +117,8 @@ BASE_FEATURES = [
 ]
 N_SAMPLES = 100
 GAM_RATE_SCALE = 1_000.0
-GAM_DETECTION_CI_WIDTH_MAX = 100.0
-MIN_WITHIN_HISTORY_MONTHS = 12
+GAM_DETECTION_CI_WIDTH_MAX = 125.0
+MIN_WITHIN_HISTORY_MONTHS = 9
 
 
 def parse_time_period(value: str) -> pd.Timestamp:

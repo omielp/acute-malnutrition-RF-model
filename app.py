@@ -32,10 +32,11 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = APP_DIR if os.path.isdir(os.path.join(APP_DIR, "data", "sample")) else os.path.dirname(APP_DIR)
 DEFAULT_CSV_PATH = os.path.join(PROJECT_ROOT, "data", "sample", "Acute_Malnutrition_data_district_2024_2025.csv")
 DEFAULT_GEOJSON_PATH = os.path.join(PROJECT_ROOT, "data", "sample", "uganda-districts_ug.geojson")
-MODEL_SCHEMA_VERSION = "gam-detection-per-1000-v22-lean-causal-log-target"
+MODEL_SCHEMA_VERSION = "gam-detection-per-1000-v23-loosened-quality-history"
 FORECAST_MODEL_OPTIONS = ["MAE-Weighted RF + SSM Blend", "Random Forest", "State-Space Model"]
-GAM_DETECTION_CI_WIDTH_MAX = 100.0
-MIN_WITHIN_HISTORY_MONTHS = 12
+GAM_DETECTION_CI_WIDTH_MAX = 125.0
+MIN_WITHIN_HISTORY_MONTHS = 9
+MIN_PROVISIONAL_HISTORY_MONTHS = 6
 RISK_THRESHOLD_PROFILES = {
     "Standard: P90 / P95": (90, 95),
     "Sensitive: P80 / P90": (80, 90),
@@ -153,6 +154,7 @@ RISK_COLORS = {
     "GAM Not Reported": "#9aa0a6",
     "Unreliable GAM Rate": "#d1d5db",
     "Insufficient Alert History": "#94a3b8",
+    "Provisional Alert History": "#60a5fa",
 }
 
 ANOMALY_GUIDANCE = {
@@ -383,6 +385,7 @@ OBSERVED_MAP_LEVELS = [
     "Respond",
     "GAM Not Reported",
     "Unreliable GAM Rate",
+    "Provisional Alert History",
     "Insufficient Alert History",
     "No Data",
 ]
@@ -394,7 +397,7 @@ def add_observed_map_status(current_df: pd.DataFrame, full_df: pd.DataFrame, cur
     prior_valid = (
         full_df[
             (full_df["Date"] < current_date)
-            & pd.to_numeric(full_df["Acut_Malnutrition_Observed"], errors="coerce").notna()
+            & full_df["target_is_observed"].fillna(0).gt(0.5)
         ]
         .groupby("District_Name")
         .size()
@@ -406,7 +409,10 @@ def add_observed_map_status(current_df: pd.DataFrame, full_df: pd.DataFrame, cur
     insufficient_history = result["Observed_Map_Status"].isna() & ~missing_gam & ~invalid_rate
     result.loc[missing_gam, "Observed_Map_Status"] = "GAM Not Reported"
     result.loc[invalid_rate, "Observed_Map_Status"] = "Unreliable GAM Rate"
+    provisional_history = insufficient_history & result["Prior_Valid_GAM_Months"].ge(MIN_PROVISIONAL_HISTORY_MONTHS)
+    result.loc[provisional_history, "Observed_Map_Status"] = "Provisional Alert History"
     result.loc[insufficient_history, "Observed_Map_Status"] = "Insufficient Alert History"
+    result.loc[provisional_history, "Observed_Map_Status"] = "Provisional Alert History"
     return result
 
 
@@ -526,11 +532,11 @@ def build_methodology_df(df: pd.DataFrame) -> pd.DataFrame:
         },
         {
             "Component": "Within-district anomaly",
-            "Definition": "Compares each district with its own historical distribution after at least 12 valid prior months.",
+            "Definition": "Compares each district with its own historical distribution after at least 9 valid prior months.",
         },
         {
             "Component": "Target reliability",
-            "Definition": "Excludes observed rates with a 95% Wilson interval wider than 100 per 1,000; the GAM value is not imputed.",
+            "Definition": "Excludes observed rates with a 95% Wilson interval wider than 125 per 1,000; the GAM value is not imputed.",
         },
         {
             "Component": "Data note",
@@ -2485,6 +2491,7 @@ def main():
                         st.caption(
                             f"{status_counts.get('GAM Not Reported', 0)} GAM not reported | "
                             f"{status_counts.get('Unreliable GAM Rate', 0)} unreliable rate | "
+                            f"{status_counts.get('Provisional Alert History', 0)} provisional history | "
                             f"{status_counts.get('Insufficient Alert History', 0)} insufficient alert history"
                         )
                         render_map(
@@ -2679,7 +2686,7 @@ def main():
                                 forecast_districts = fc_map["District_Name"].nunique()
                                 st.caption(
                                     f"Forecasts are available for {forecast_districts} of {matched} mapped districts. "
-                                    "Grey districts have insufficient valid observed GAM-detection-rate history and are shown as No Data."
+                                    "Grey districts have insufficient valid observed GAM-detection-rate history; provisional-history districts are shown separately."
                                 )
                                 horizons = fc_map[["Step", "Month_Year"]].drop_duplicates().sort_values("Step")
                                 map_cols = [("WD_Risk", "Operational Alert (District Anomaly)")]

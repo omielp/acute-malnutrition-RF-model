@@ -2,14 +2,14 @@
 
 AMFT is a Streamlit-based decision-support tool for district-level acute malnutrition monitoring in Uganda. It combines anomaly detection, short-term forecasting, geospatial visualization, data quality checks, and model evaluation to support early warning and operational planning.
 
-The current version focuses on two connected outputs:
+The current app provides two connected outputs:
 
 - 3-level operational alert classification from each district's own history
 - separate direct 1-month and 3-month district forecasts of GAM detection rates per 1,000 assessed children with uncertainty bounds
 
-## What Changed in the Current Tool
+## Current Application
 
-The README has been updated to reflect the current app behavior. The tool now uses:
+The app uses:
 
 - operational alert levels of `Monitor`, `Alert`, and `Respond`
 - direct 1-month and 3-month forecasting with `Lower_80` and `Upper_80` intervals
@@ -43,7 +43,7 @@ Observed and forecast anomaly labels use percentile thresholds:
 | `Alert` | 90th to below 95th percentile | Higher than usual; investigate and validate |
 | `Respond` | 95th percentile and above | Exceptionally high; escalate for rapid assessment and response planning |
 
-Within-district labels are assigned only after a district has at least 12 valid prior GAM-detection-rate months. Before that, the within-district label is `No Data` rather than an unstable anomaly classification.
+Within-district labels are assigned after a district has at least 9 valid prior GAM-detection-rate months. Districts with 6–8 valid prior months are shown as `Provisional Alert History` on the observed map: their GAM rate is available, but they do not receive a standard operational-alert label. Districts with fewer than 6 valid prior months remain `Insufficient Alert History`.
 
 The Streamlit sidebar provides two alert-threshold profiles and three forecast-model choices for operational review:
 
@@ -76,9 +76,9 @@ The application follows this workflow:
 
 1. Load monthly district GAM data.
 2. Parse dates and standardize district labels.
-3. Calculate within-district anomalies from each district's own historical distribution after 12 valid prior months.
+3. Calculate within-district anomalies from each district's own historical distribution after 9 valid prior months.
 4. Harmonize diarrhea inputs, sanitize impossible values, cap extreme modeled covariates, and create missingness and outlier indicator features.
-5. Apply observed-only target QC: invalid GAM, duplicate district-months, and imprecise GAM detection rates with a 95% Wilson interval wider than 100 per 1,000 are retained as `No Data` and excluded from training/evaluation.
+5. Apply observed-only target QC: invalid GAM, duplicate district-months, and imprecise GAM detection rates with a 95% Wilson interval wider than 125 per 1,000 are retained as `No Data` and excluded from training/evaluation.
 6. Engineer a lean, causal feature set: GAM lags, a rolling GAM mean, seasonal terms, and lag-1 operational covariates with data-quality flags.
 7. Train a Random Forest regressor for GAM detection rates; anomaly labels are derived from regression outputs and percentile rules, not a classifier.
 
@@ -208,11 +208,11 @@ Modeled covariates and GAM targets are handled differently:
 - impossible covariate values are converted to missing before preprocessing, for example negative child-health counts, non-positive `population_u5`, negative `rainfall`, negative `average_gpp`, humidity outside `0-100`, or reporting rates outside `0-100`
 - extreme modeled covariates are capped within district/location using a robust median plus/minus `5 * MAD` rule calculated from earlier observations only, and each modeled covariate also gets a companion `*_outlier` indicator
 - GAM detection rates are calculated only when GAM is non-negative, children assessed is positive, GAM does not exceed children assessed, and the district-month is not duplicated
-- a 95% Wilson confidence interval is calculated from GAM cases and children assessed only; rates with an interval wider than 100 per 1,000 are retained as QC records but excluded from training, evaluation, and anomaly thresholds
+- a 95% Wilson confidence interval is calculated from GAM cases and children assessed only; rates with an interval wider than 125 per 1,000 are retained as QC records but excluded from training, evaluation, and anomaly thresholds
 - invalid or missing GAM target rows remain in the dataset but are excluded from training and evaluation; GAM is never proxy-filled or imputed
 - GAM target outlier flags remain QC signals and do not automatically exclude a true spike
 
-Within-district anomaly labels require at least 12 valid prior GAM-detection-rate months. `Low` and `Moderate` map to `Monitor`, `High` maps to `Alert`, and `Extreme` maps to `Respond`.
+Within-district anomaly labels require at least 9 valid prior GAM-detection-rate months. Districts with 6–8 prior valid months are retained as a provisional map state, not promoted to a standard alert. `Monitor`, `Alert`, and `Respond` are the standard operational-alert levels.
 
 ### Output schema
 

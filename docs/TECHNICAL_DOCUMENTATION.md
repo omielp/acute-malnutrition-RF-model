@@ -8,7 +8,7 @@ This application supports early warning and decision support for acute malnutrit
 
 1. Load monthly district data.
 2. Parse dates and standardize region/district labels.
-3. Compute within-district risk using each district's own historical percentiles after 12 valid prior months.
+3. Compute within-district risk using each district's own historical percentiles after 9 valid prior months.
 4. Harmonize legacy diarrhea inputs where needed.
 5. Sanitize impossible target and covariate values.
 6. Impute missing modeled covariates with district/location-aware rules and create `*_missing` indicators.
@@ -18,7 +18,7 @@ This application supports early warning and decision support for acute malnutrit
 10. Train Random Forest regression on a log1p GAM detection-rate target; inputs are not full-history standardised, preventing later observations from influencing earlier rows.
 11. Derive within-district risk labels from percentile rules; no Random Forest classifier produces risk labels.
 
-Existing CHAP artifacts created before `chap-rf-v20-lean-direct-horizons` must be retrained. The prediction command rejects incompatible artifacts rather than applying an incompatible feature schema.
+Existing CHAP artifacts created before `chap-rf-v21-loosened-quality-history` must be retrained. The prediction command rejects incompatible artifacts rather than applying an incompatible feature schema or target-quality policy.
 12. Generate separate direct forecasts for horizons 1 and 3; the 3-month model does not use intermediate predictions.
 13. Convert forecasts into within-district risk categories.
 14. Visualize results through maps, charts, risk tables, and model metrics.
@@ -39,7 +39,7 @@ For Streamlit forecasting, users can select Random Forest, a causal district loc
 
 ## Within-District Risk
 
-Within-district risk compares a district against its own previous valid GAM-detection-rate history. It is assigned only after 12 valid prior months, preventing unstable labels in early or sparse histories.
+Within-district risk compares a district against its own previous valid GAM-detection-rate history. It is assigned after 9 valid prior months. Districts with 6–8 valid prior months are shown as `Provisional Alert History` on the observed map, without a standard alert label; districts below 6 months remain `Insufficient Alert History`.
 
 ## Suggested Actions
 
@@ -112,7 +112,7 @@ The regression target is the observed GAM detection rate among assessed children
 
 `GAM detection rate = GAM cases / screened_u5 * 1,000`
 
-Rows are retained for all districts. A district-month is excluded from training and evaluation when GAM is missing or invalid, children assessed is missing or not positive, GAM exceeds children assessed, the district-month is duplicated, or its 95% Wilson interval is wider than 100 per 1,000. The interval is calculated from GAM cases and children assessed only, not from population or any future information. GAM is never imputed or proxy-filled. GAM target outliers remain QC flags because a genuine spike may carry operational signal.
+Rows are retained for all districts. A district-month is excluded from training and evaluation when GAM is missing or invalid, children assessed is missing or not positive, GAM exceeds children assessed, the district-month is duplicated, or its 95% Wilson interval is wider than 125 per 1,000. The interval is calculated from GAM cases and children assessed only, not from population or any future information. GAM is never imputed or proxy-filled. GAM target outliers remain QC flags because a genuine spike may carry operational signal.
 
 ## Models
 
@@ -130,7 +130,7 @@ The CHAP interface supports two output modes:
 | Default CHAP mode | default behavior | `time_period`, `location`, `sample_0` to `sample_99` | safest path for CHAP and DHIS2 ingestion |
 | Enriched CHAP mode | `CHAP_INCLUDE_RISK_OUTPUT=1` with `predict.py`, or `python chap_model.py predict ... --include-risk-output` | default CHAP columns plus `point_forecast`, `operational_alert`, `operational_alert_code` | testing or downstream flows that can tolerate extra columns |
 
-When a district has fewer than three valid observed GAM-detection-rate months, its requested future rows are retained with blank samples and `No Data` enriched fields. The model does not create a synthetic GAM history for that district. Enriched within-district anomaly output also requires 12 valid observed months.
+When a district has fewer than three valid observed GAM-detection-rate months, its requested future rows are retained with blank samples and `No Data` enriched fields. The model does not create a synthetic GAM history for that district. Enriched within-district anomaly output requires 9 valid observed months.
 
 The direct models support future months `+1` and `+3` from each district's latest valid GAM observation. A supplied `+2` row is retained with blank samples and `No Data` enriched fields so CHAP receives an honest, non-recursive output rather than an imputed intermediate forecast.
 
