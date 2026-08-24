@@ -170,14 +170,13 @@ Modeled covariates supported by the model:
 - `pneumonia_cases_u5` for pneumonia cases among children under 5
 - `diarrhea_u5` for diarrhoea cases among children under 5
 - `low_birth_weight_babies` for low birth weight newborns
-- `sam_admissions_u5` for SAM admissions among children under 5
 - `screened_u5` for under-5 nutrition screening or assessment volume
 - `reporting_rate` for the district health-facility reporting rate, accepted as either `0-1` or `0-100`
 - `population_u5` for the district under-5 population
 
 For this project, all clinical and service-delivery covariates are interpreted as children under 5 years of age. In practice this means:
 
-- `malaria_confirmed_u5`, `pneumonia_cases_u5`, `diarrhea_u5`, `sam_admissions_u5`, and `screened_u5` are under-5 case-count or service-volume inputs
+- `malaria_confirmed_u5`, `pneumonia_cases_u5`, `diarrhea_u5`, and `screened_u5` are under-5 case-count or service-volume inputs
 - `low_birth_weight_babies` is retained as a neonatal input and therefore still falls within the under-5 scope
 - `reporting_rate` is a district operational-quality input and is normalized to a `0-1` fraction inside the pipeline
 - `population_u5` is the under-5 population denominator
@@ -337,7 +336,6 @@ When a GeoJSON is provided, the app asks you to select the district name column 
 | `pneumonia_cases_u5` | Pneumonia cases among children under 5 |
 | `diarrhea_u5` | Diarrhoea cases among children under 5 |
 | `low_birth_weight_babies` | Low birth weight newborns |
-| `sam_admissions_u5` | SAM admissions among children under 5 |
 | `screened_u5` | Children assessed; required denominator for the GAM detection-rate target |
 | `reporting_rate` | District health-facility reporting rate, accepted as `0-1` or `0-100` |
 | `population_u5` | District under-5 population |

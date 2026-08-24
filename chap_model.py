@@ -33,7 +33,6 @@ CHILD_HEALTH_COVARIATES = [
     "pneumonia_cases_u5",
     "diarrhea_u5",
     "low_birth_weight_babies",
-    "sam_admissions_u5",
     "screened_u5",
 ]
 RATE_COVARIATES = ["reporting_rate"]
@@ -74,13 +73,6 @@ COVARIATE_ALIASES = {
         "diarrhea_u5",
         "diarrhea",
         *LEGACY_DIARRHEA_COVARIATES,
-    ),
-    "sam_admissions_u5": (
-        "sam_admissions_u5",
-        "sam_admissions",
-        "sam_admission",
-        "sam_cases_admitted",
-        "sam_admitted",
     ),
     "screened_u5": (
         "screened_u5",

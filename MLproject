@@ -12,7 +12,6 @@ required_covariates:
   - pneumonia_cases_u5
   - diarrhea_u5
   - low_birth_weight_babies
-  - sam_admissions_u5
   - screened_u5
   - reporting_rate
   - population_u5
@@ -45,7 +44,7 @@ meta_data:
     recursive month-2 forecast is produced.
     All clinical and service-delivery covariates are interpreted as under-5
     inputs, with malaria_confirmed_u5, pneumonia_cases_u5, diarrhea_u5,
-    sam_admissions_u5, and screened_u5 as under-5 case-count or
+    and screened_u5 as under-5 case-count or
     service-volume covariates, reporting_rate as a district
     reporting-quality covariate, population_u5 as the under-5 denominator,
     and low_birth_weight_babies as a

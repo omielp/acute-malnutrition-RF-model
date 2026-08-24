@@ -53,7 +53,6 @@ CHILD_HEALTH_COVARIATES = [
     "pneumonia_cases_u5",
     "diarrhea_u5",
     "low_birth_weight_babies",
-    "sam_admissions_u5",
     "screened_u5",
 ]
 RATE_COVARIATES = ["reporting_rate"]
@@ -95,13 +94,6 @@ COVARIATE_ALIASES = {
         "diarrhea",
         "diarrhea_acute",
         "diarrhea_persistent",
-    ),
-    "sam_admissions_u5": (
-        "sam_admissions_u5",
-        "sam_admissions",
-        "sam_admission",
-        "sam_cases_admitted",
-        "sam_admitted",
     ),
     "screened_u5": (
         "screened_u5",
@@ -169,12 +161,10 @@ FEATURE_COLS_NEW = MODELED_COVARIATES
 REPORTING_RATE_FLOOR = 0.6
 GAM_RATE_SCALE = 1_000.0
 PROXY_SCREEN_WEIGHT = 0.7
-PROXY_SAM_WEIGHT = 0.3
 PROXY_SOURCE_BASE_WEIGHTS = {
     "observed": 1.0,
     "proxy_combined": 0.6,
     "proxy_screened": 0.5,
-    "proxy_sam_admissions": 0.35,
     "missing": 0.0,
 }
 
@@ -187,7 +177,6 @@ NICE_NAMES = {
     "pneumonia_cases_u5": "Pneumonia Cases (<5)",
     "diarrhea_u5": "Diarrhoea Cases (<5)",
     "low_birth_weight_babies": "Low Birth Weight Newborns",
-    "sam_admissions_u5": "SAM Admissions (<5)",
     "screened_u5": "Children Screened (<5)",
     "reporting_rate": "Facility Reporting Rate",
     "population_u5": "Under-5 Population",
@@ -199,7 +188,6 @@ NICE_NAMES = {
     "pneumonia_cases_u5_missing": "Pneumonia Cases (<5) Missing",
     "diarrhea_u5_missing": "Diarrhoea Cases (<5) Missing",
     "low_birth_weight_babies_missing": "Low Birth Weight Newborns Missing",
-    "sam_admissions_u5_missing": "SAM Admissions (<5) Missing",
     "screened_u5_missing": "Children Screened (<5) Missing",
     "reporting_rate_missing": "Facility Reporting Rate Missing",
     "population_u5_missing": "Under-5 Population Missing",
@@ -211,7 +199,6 @@ NICE_NAMES = {
     "pneumonia_cases_u5_outlier": "Pneumonia Cases (<5) Outlier",
     "diarrhea_u5_outlier": "Diarrhoea Cases (<5) Outlier",
     "low_birth_weight_babies_outlier": "Low Birth Weight Newborns Outlier",
-    "sam_admissions_u5_outlier": "SAM Admissions (<5) Outlier",
     "screened_u5_outlier": "Children Screened (<5) Outlier",
     "reporting_rate_outlier": "Facility Reporting Rate Outlier",
     "population_u5_outlier": "Under-5 Population Outlier",
@@ -284,9 +271,7 @@ _EXCLUDE_FROM_FEATURES = {
     "Acut_Malnutrition_Observed",
     "effective_reporting_rate",
     "screened_u5_adjusted",
-    "sam_admissions_u5_adjusted",
     "gam_proxy_screened",
-    "gam_proxy_sam_admissions",
     "gam_proxy_combined",
     "target_source",
     "target_proxy_confidence",
@@ -675,7 +660,6 @@ def compute_target_proxy_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
         "proxy_rows": int(source_series.ne("observed").sum()),
         "proxy_combined_rows": int(source_series.eq("proxy_combined").sum()),
         "proxy_screened_rows": int(source_series.eq("proxy_screened").sum()),
-        "proxy_sam_rows": int(source_series.eq("proxy_sam_admissions").sum()),
     }
 
     proxy_table = (
@@ -1369,89 +1353,15 @@ def add_target_proxy_columns(
     group_col: str,
     date_col: str,
 ) -> pd.DataFrame:
+    """Retain observed GAM only; proxy targets are deliberately disabled."""
     df = df.copy()
     observed = pd.to_numeric(df[target_col], errors="coerce")
-    reporting_rate = (
-        pd.to_numeric(df["reporting_rate"], errors="coerce")
-        if "reporting_rate" in df.columns
-        else pd.Series(1.0, index=df.index, dtype="float64")
-    )
-    effective_rate = effective_reporting_rate(reporting_rate)
-    screened = pd.to_numeric(df["screened_u5"], errors="coerce") if "screened_u5" in df.columns else pd.Series(np.nan, index=df.index, dtype="float64")
-    sam = pd.to_numeric(df["sam_admissions_u5"], errors="coerce") if "sam_admissions_u5" in df.columns else pd.Series(np.nan, index=df.index, dtype="float64")
-
-    screened_adjusted = screened / effective_rate
-    sam_adjusted = sam / effective_rate
-
-    screened_ratio_source = (observed / screened_adjusted.replace(0, np.nan)).where(observed.notna() & screened_adjusted.gt(0))
-    sam_ratio_source = (observed / sam_adjusted.replace(0, np.nan)).where(observed.notna() & sam_adjusted.gt(0))
-
-    screened_ratio = fill_group_month_median(df, screened_ratio_source, group_col, date_col)
-    sam_ratio = fill_group_month_median(df, sam_ratio_source, group_col, date_col)
-
-    gam_proxy_screened = (screened_adjusted * screened_ratio).where(screened_adjusted.gt(0)).clip(lower=0)
-    gam_proxy_sam_admissions = (sam_adjusted * sam_ratio).where(sam_adjusted.gt(0)).clip(lower=0)
-
-    gam_proxy_combined = pd.Series(np.nan, index=df.index, dtype="float64")
-    both = gam_proxy_screened.notna() & gam_proxy_sam_admissions.notna()
-    only_screened = gam_proxy_screened.notna() & ~gam_proxy_sam_admissions.notna()
-    only_sam = gam_proxy_sam_admissions.notna() & ~gam_proxy_screened.notna()
-    gam_proxy_combined.loc[both] = (
-        PROXY_SCREEN_WEIGHT * gam_proxy_screened.loc[both]
-        + PROXY_SAM_WEIGHT * gam_proxy_sam_admissions.loc[both]
-    )
-    gam_proxy_combined.loc[only_screened] = gam_proxy_screened.loc[only_screened]
-    gam_proxy_combined.loc[only_sam] = gam_proxy_sam_admissions.loc[only_sam]
-
-    target_source = pd.Series("missing", index=df.index, dtype="object")
-    target_source.loc[only_sam] = "proxy_sam_admissions"
-    target_source.loc[only_screened] = "proxy_screened"
-    target_source.loc[both] = "proxy_combined"
-    target_source.loc[observed.notna()] = "observed"
-
-    reporting_for_conf = reporting_rate.fillna(1.0)
-    sam_mask = target_source.eq("proxy_sam_admissions")
-    screened_mask = target_source.eq("proxy_screened")
-    combined_mask = target_source.eq("proxy_combined")
-    target_proxy_confidence = pd.Series("No Data", index=df.index, dtype="object")
-    target_proxy_confidence.loc[observed.notna()] = "Observed"
-    target_proxy_confidence.loc[sam_mask] = "Low"
-    target_proxy_confidence.loc[screened_mask] = np.where(
-        reporting_for_conf.loc[screened_mask].ge(0.8),
-        "Medium",
-        "Low",
-    )
-    target_proxy_confidence.loc[combined_mask] = np.where(
-        reporting_for_conf.loc[combined_mask].ge(0.8),
-        "High",
-        np.where(reporting_for_conf.loc[combined_mask].ge(0.6), "Medium", "Low"),
-    )
-
-    report_weight_factor = pd.Series(
-        np.where(
-            reporting_for_conf.ge(0.8),
-            1.0,
-            np.where(reporting_for_conf.ge(0.6), 0.85, 0.7),
-        ),
-        index=df.index,
-        dtype="float64",
-    )
-    target_training_weight = target_source.map(PROXY_SOURCE_BASE_WEIGHTS).astype(float)
-    proxy_mask = target_source.ne("observed")
-    target_training_weight.loc[proxy_mask] = target_training_weight.loc[proxy_mask] * report_weight_factor.loc[proxy_mask]
-
     df[f"{target_col}_Observed"] = observed
-    df["effective_reporting_rate"] = effective_rate
-    df["screened_u5_adjusted"] = screened_adjusted
-    df["sam_admissions_u5_adjusted"] = sam_adjusted
-    df["gam_proxy_screened"] = gam_proxy_screened
-    df["gam_proxy_sam_admissions"] = gam_proxy_sam_admissions
-    df["gam_proxy_combined"] = gam_proxy_combined
-    df["target_source"] = target_source
-    df["target_proxy_confidence"] = target_proxy_confidence
+    df["target_source"] = np.where(observed.notna(), "observed", "missing")
+    df["target_proxy_confidence"] = np.where(observed.notna(), "Observed", "No Data")
     df["target_is_observed"] = observed.notna().astype(float)
-    df["target_training_weight"] = target_training_weight
-    df[target_col] = observed.fillna(gam_proxy_combined)
+    df["target_training_weight"] = df["target_is_observed"]
+    df[target_col] = observed
     return df
 
 
@@ -2423,12 +2333,11 @@ def main():
                 st.dataframe(rename_for_display(dq_monthly), use_container_width=True, hide_index=True, height=320)
 
             with ptab:
-                p1, p2, p3, p4, p5 = st.columns(5)
+                p1, p2, p3, p4 = st.columns(4)
                 p1.metric("Observed targets", f"{proxy_summary['observed_rows']:,}")
                 p2.metric("Proxy targets", f"{proxy_summary['proxy_rows']:,}")
                 p3.metric("Combined proxy", f"{proxy_summary['proxy_combined_rows']:,}")
                 p4.metric("Screened proxy", f"{proxy_summary['proxy_screened_rows']:,}")
-                p5.metric("SAM proxy", f"{proxy_summary['proxy_sam_rows']:,}")
                 st.caption("Observed GAM rows remain the gold-standard evaluation set. Proxy-filled rows can contribute to training with reduced weights.")
                 st.dataframe(rename_for_display(proxy_table), use_container_width=True, hide_index=True, height=240)
 
