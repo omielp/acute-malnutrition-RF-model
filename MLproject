@@ -38,9 +38,11 @@ meta_data:
   display_name: "Acute Malnutrition Forecasting Tool"
   description: >
     Monthly district-level acute malnutrition forecasting model prepared for
-    DHIS2 CHAP integration. The model consumes CHAP-format case-count and
-    covariate data and returns probabilistic forecasts as sample columns in
-    the default CHAP output mode.
+    DHIS2 CHAP integration. The model converts reported GAM cases and children
+    assessed into GAM detection rates per 1,000 assessed children and returns probabilistic forecasts as sample columns in
+    the default CHAP output mode. It uses separate direct models for months +1
+    and +3; an optional +2 input row is retained with blank samples because no
+    recursive month-2 forecast is produced.
     All clinical and service-delivery covariates are interpreted as under-5
     inputs, with malaria_confirmed_u5, pneumonia_cases_u5, diarrhea_u5,
     sam_admissions_u5, and screened_u5 as under-5 case-count or
@@ -50,9 +52,9 @@ meta_data:
     neonatal indicator within the same under-5 scope. Missing covariates are
     optional and are imputed with rule-based
     district-aware preprocessing, extreme modeled covariates are capped with
-    robust thresholds, and suspicious target spikes are flagged for QC rather
-    than clipped by default. Optional anomaly and operational-alert columns
-    are available only in the enriched testing mode.
+    robust past-only thresholds, and suspicious target spikes are flagged for
+    QC rather than clipped by default. Optional direct operational-alert
+    columns are available only in enriched output mode.
   author: "HISP Uganda"
   author_assessed_status: orange
   documentation_url: "https://github.com/omielp/acute-malnutrition-RF-model"

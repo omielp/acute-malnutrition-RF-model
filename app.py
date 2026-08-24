@@ -30,9 +30,16 @@ warnings.filterwarnings("ignore")
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = APP_DIR if os.path.isdir(os.path.join(APP_DIR, "data", "sample")) else os.path.dirname(APP_DIR)
-DEFAULT_CSV_PATH = os.path.join(PROJECT_ROOT, "data", "sample", "Acute_Malnutrition_data_district.csv")
+DEFAULT_CSV_PATH = os.path.join(PROJECT_ROOT, "data", "sample", "Acute_Malnutrition_data_district_2024_2025.csv")
 DEFAULT_GEOJSON_PATH = os.path.join(PROJECT_ROOT, "data", "sample", "uganda-districts_ug.geojson")
-MODEL_SCHEMA_VERSION = "anomaly-4level-v10"
+MODEL_SCHEMA_VERSION = "gam-detection-per-1000-v22-lean-causal-log-target"
+FORECAST_MODEL_OPTIONS = ["MAE-Weighted RF + SSM Blend", "Random Forest", "State-Space Model"]
+GAM_DETECTION_CI_WIDTH_MAX = 100.0
+MIN_WITHIN_HISTORY_MONTHS = 12
+RISK_THRESHOLD_PROFILES = {
+    "Standard: P90 / P95": (90, 95),
+    "Sensitive: P80 / P90": (80, 90),
+}
 LEGACY_DIARRHEA_COLUMNS = ("diarrhea_acute", "diarrhea_persistent")
 CLIMATE_COVARIATES = [
     "mean_temperature",
@@ -51,22 +58,28 @@ CHILD_HEALTH_COVARIATES = [
 RATE_COVARIATES = ["reporting_rate"]
 SLOW_MOVING_COVARIATES = ["population_u5"]
 MODELED_COVARIATES = CLIMATE_COVARIATES + CHILD_HEALTH_COVARIATES + RATE_COVARIATES + SLOW_MOVING_COVARIATES
+CORE_COVARIATES = [
+    "mean_temperature",
+    "rainfall",
+    "average_gpp",
+    "malaria_confirmed_u5",
+    "diarrhea_u5",
+    "screened_u5",
+    "reporting_rate",
+    "population_u5",
+]
+CORE_GAM_FEATURES = [
+    "Month_Sin",
+    "Month_Cos",
+    "Lag1",
+    "Lag2",
+    "Lag3",
+    "Roll3_Mean",
+    "Seasonal_Lag12",
+]
 MISSING_FLAG_SUFFIX = "_missing"
 OUTLIER_FLAG_SUFFIX = "_outlier"
 COUNT_COVARIATES = CHILD_HEALTH_COVARIATES
-LAGGED_EXOG_COVARIATES = [
-    "mean_temperature",
-    "rainfall",
-    "mean_relative_humidity",
-    "average_gpp",
-    "malaria_confirmed_u5",
-    "pneumonia_cases_u5",
-    "diarrhea_u5",
-    "low_birth_weight_babies",
-    "sam_admissions_u5",
-    "screened_u5",
-    "reporting_rate",
-]
 COVARIATE_ALIASES = {
     "malaria_confirmed_u5": (
         "malaria_confirmed_u5",
@@ -114,18 +127,11 @@ COVARIATE_ALIASES = {
     ),
 }
 
-RISK_LEVELS = ["Low", "Moderate", "High", "Extreme"]
+RISK_LEVELS = ["Monitor", "Alert", "Respond"]
 RISK_ORDER = {
-    "Low": 0,
-    "Moderate": 1,
-    "High": 2,
-    "Extreme": 3,
-}
-OPERATIONAL_ALERT_LEVELS = ["Monitor", "Alert", "Respond"]
-OPERATIONAL_ALERT_ORDER = {
     "Monitor": 0,
     "Alert": 1,
-    "Respond": 3,
+    "Respond": 2,
 }
 IPC_LEVELS = ["Acceptable", "Alert", "Serious", "Critical", "Extremely Critical"]
 IPC_ORDER = {
@@ -136,10 +142,6 @@ IPC_ORDER = {
     "Extremely Critical": 4,
 }
 RISK_COLORS = {
-    "Low": "#2ecc71",
-    "Moderate": "#ffd11a",
-    "High": "#f08a24",
-    "Extreme": "#d85c4a",
     "Monitor": "#2ecc71",
     "Alert": "#ffd11a",
     "Respond": "#d85c4a",
@@ -148,19 +150,22 @@ RISK_COLORS = {
     "Critical": "#f8d7da",
     "Extremely Critical": "#f5c6cb",
     "No Data": "#bdbdbd",
+    "GAM Not Reported": "#9aa0a6",
+    "Unreliable GAM Rate": "#d1d5db",
+    "Insufficient Alert History": "#94a3b8",
 }
 
 ANOMALY_GUIDANCE = {
-    "Low": "Within the usual range",
-    "Moderate": "Higher than usual",
-    "High": "Unusually high",
-    "Extreme": "Exceptionally high",
+    "Monitor": "Within the usual range",
+    "Alert": "Higher than usual",
+    "Respond": "Exceptionally high",
 }
 
 SKEWED_COVS = CHILD_HEALTH_COVARIATES + SLOW_MOVING_COVARIATES
 
 FEATURE_COLS_NEW = MODELED_COVARIATES
 REPORTING_RATE_FLOOR = 0.6
+GAM_RATE_SCALE = 1_000.0
 PROXY_SCREEN_WEIGHT = 0.7
 PROXY_SAM_WEIGHT = 0.3
 PROXY_SOURCE_BASE_WEIGHTS = {
@@ -210,8 +215,13 @@ NICE_NAMES = {
     "population_u5_outlier": "Under-5 Population Outlier",
     "target_outlier_qc": "GAM Target Outlier QC",
     "target_duplicate_qc": "Duplicate District-Month QC",
-    "Acut_Malnutrition": "GAM Caseload (SAM + MAM)",
-    "Acut_Malnutrition_Observed": "Observed GAM Caseload",
+    "target_precision_qc": "Imprecise GAM Detection Rate QC",
+    "gam_detection_ci_lower": "GAM Detection Rate 95% CI Lower",
+    "gam_detection_ci_upper": "GAM Detection Rate 95% CI Upper",
+    "gam_detection_ci_width": "GAM Detection Rate 95% CI Width",
+    "Acut_Malnutrition": "GAM Detection Rate per 1,000 Assessed Children",
+    "Acut_Malnutrition_Observed": "Observed GAM Detection Rate per 1,000 Assessed Children",
+    "GAM_Cases_Observed": "Observed GAM Cases",
     "target_source": "Target Source",
     "target_proxy_confidence": "Target Proxy Confidence",
     "target_is_observed": "Observed Target Flag",
@@ -224,22 +234,16 @@ DISPLAY_LABELS = {
     "District_Name": "District",
     "Region_Label": "Region",
     "Region_District": "Region | District",
-    "wd_risk": "Within-District Anomaly",
-    "xd_risk": "Between-Districts Anomaly",
-    "WD_Risk": "Within-District Anomaly",
-    "XD_Risk": "Between-Districts Anomaly",
+    "wd_risk": "Operational Alert (District Anomaly)",
+    "WD_Risk": "Operational Alert (District Anomaly)",
     "Severity_Prevalence_Pct": "GAM Prevalence (%)",
     "Severity_Phase": "IPC AMN Phase",
     "Lower_Severity_Phase": "Lower-Bound IPC AMN Phase",
     "Severity_Basis": "Severity Basis",
-    "Caseload_per_100000_Pop": "GAM Caseload per 100,000 Population",
-    "Predicted_Caseload_per_100000_Pop": "Forecast GAM Caseload per 100,000 Population",
     "Denominator_Source": "Severity Source",
-    "Predicted": "Forecast GAM Caseload",
+    "Predicted": "Forecast GAM Detection Rate per 1,000 Assessed Children",
     "Lower_80": "Lower 80% Bound",
     "Upper_80": "Upper 80% Bound",
-    "Operational_Alert": "Operational Alert",
-    "Operational_Alert_Why": "Alert Rule",
     "Months_Reported": "Months Reported",
     "Completeness_Pct": "Completeness (%)",
     "Zero_GAM_Months": "Zero GAM Months",
@@ -247,7 +251,7 @@ DISPLAY_LABELS = {
     "Missing_Population": "Missing Population",
     "Missing_Severity": "Missing Severity Rows",
     "Districts_Reported": "Districts Reported",
-    "Total_GAM_Caseload": "Total GAM Caseload",
+    "Total_GAM_Caseload": "District GAM Detection Rate Sum",
     "Zero_GAM_Districts": "Districts with Zero GAM",
     "Reporting_Completeness_Pct": "Reporting Completeness (%)",
     "target_source": "Target Source",
@@ -266,24 +270,13 @@ _EXCLUDE_FROM_FEATURES = {
     "Date",
     "Acut_Malnutrition",
     "wd_risk",
-    "xd_risk",
     "wd_score",
-    "xd_score",
-    "wd_p50",
-    "wd_p75",
-    "wd_p90",
+    "wd_p80",
     "wd_p95",
-    "xd_p50",
-    "xd_p75",
-    "xd_p90",
-    "xd_p95",
     "Severity_Prevalence_Pct",
     "Severity_Phase",
     "Severity_Basis",
-    "Caseload_per_100000_Pop",
     "Denominator_Source",
-    "Operational_Alert",
-    "Operational_Alert_Why",
     "month",
     "quarter",
     "Acut_Malnutrition_Observed",
@@ -299,6 +292,10 @@ _EXCLUDE_FROM_FEATURES = {
     "target_training_weight",
     "target_outlier_qc",
     "target_duplicate_qc",
+    "target_precision_qc",
+    "gam_detection_ci_lower",
+    "gam_detection_ci_upper",
+    "gam_detection_ci_width",
     "diarrhea_acute",
     "diarrhea_persistent",
 }
@@ -363,48 +360,54 @@ def render_phase_pie_chart(counts: pd.DataFrame, level_col: str = "Level"):
     st.plotly_chart(fig, use_container_width=True)
 
 
-def build_alert_comparison_table(df: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for level in RISK_LEVELS:
-        rows.append({
-            "Indicator": "Within-District Anomaly",
-            "Level": level,
-            "District Count": int(df["wd_risk"].value_counts().reindex(RISK_LEVELS).fillna(0).get(level, 0)),
-        })
-    for level in RISK_LEVELS:
-        rows.append({
-            "Indicator": "Between-Districts Anomaly",
-            "Level": level,
-            "District Count": int(df["xd_risk"].value_counts().reindex(RISK_LEVELS).fillna(0).get(level, 0)),
-        })
-    for level in OPERATIONAL_ALERT_LEVELS:
-        rows.append({
-            "Indicator": "Operational Alert",
-            "Level": level,
-            "District Count": int(df["Operational_Alert"].value_counts().reindex(OPERATIONAL_ALERT_LEVELS).fillna(0).get(level, 0)),
-        })
-    return pd.DataFrame(rows)
-
-
 def ordered_levels_for_col(col: str) -> list[str]:
-    if col in {"Operational_Alert", "Composite_Risk"}:
-        return OPERATIONAL_ALERT_LEVELS
     if col in {"Severity_Phase", "Lower_Severity_Phase"}:
         return IPC_LEVELS
     return RISK_LEVELS
 
 
-def classify_risk(value: float, p50: float, p75: float, p90: float, p95: float) -> str:
-    """Map anomaly intensity to a percentile-based four-band alert scale."""
+def classify_risk(value: float, p80: float, p95: float) -> str:
+    """Map a district-relative GAM rate to the direct three-level alert scale."""
     if pd.isna(value):
         return "No Data"
-    if value < p75:
-        return "Low"
-    if value < p90:
-        return "Moderate"
+    if value < p80:
+        return "Monitor"
     if value < p95:
-        return "High"
-    return "Extreme"
+        return "Alert"
+    return "Respond"
+
+
+OBSERVED_MAP_LEVELS = [
+    "Monitor",
+    "Alert",
+    "Respond",
+    "GAM Not Reported",
+    "Unreliable GAM Rate",
+    "Insufficient Alert History",
+    "No Data",
+]
+
+
+def add_observed_map_status(current_df: pd.DataFrame, full_df: pd.DataFrame, current_date) -> pd.DataFrame:
+    """Expose why an observed district-month cannot receive an alert label."""
+    result = current_df.copy()
+    prior_valid = (
+        full_df[
+            (full_df["Date"] < current_date)
+            & pd.to_numeric(full_df["Acut_Malnutrition_Observed"], errors="coerce").notna()
+        ]
+        .groupby("District_Name")
+        .size()
+    )
+    result["Prior_Valid_GAM_Months"] = result["District_Name"].map(prior_valid).fillna(0).astype(int)
+    result["Observed_Map_Status"] = result["wd_risk"]
+    missing_gam = result["target_exclusion_reason"].eq("missing_gam")
+    invalid_rate = result["Observed_Map_Status"].isna() & ~missing_gam & result["target_exclusion_reason"].ne("")
+    insufficient_history = result["Observed_Map_Status"].isna() & ~missing_gam & ~invalid_rate
+    result.loc[missing_gam, "Observed_Map_Status"] = "GAM Not Reported"
+    result.loc[invalid_rate, "Observed_Map_Status"] = "Unreliable GAM Rate"
+    result.loc[insufficient_history, "Observed_Map_Status"] = "Insufficient Alert History"
+    return result
 
 
 def classify_ipc_amn_phase(prevalence_pct: float) -> str:
@@ -426,10 +429,6 @@ def risk_score(label: str) -> int:
     return RISK_ORDER.get(label, -1)
 
 
-def operational_alert_score(label: str) -> int:
-    return OPERATIONAL_ALERT_ORDER.get(label, -1)
-
-
 def severity_score(label: str) -> int:
     return {
         "Acceptable": 0,
@@ -438,107 +437,6 @@ def severity_score(label: str) -> int:
         "Critical": 3,
         "Extremely Critical": 3,
     }.get(label, -1)
-
-
-def derive_operational_alert(
-    wd_risk: str,
-    xd_risk: str,
-    severity_phase: str,
-    lower_severity_phase: str = "No Data",
-) -> str:
-    """Map within- and between-district anomaly combinations to an operational alert."""
-    if wd_risk not in RISK_LEVELS or xd_risk not in RISK_LEVELS:
-        return "No Data"
-    if wd_risk == "Low" and xd_risk in {"Low", "Moderate"}:
-        return "Monitor"
-    if (
-        (wd_risk == "Low" and xd_risk in {"High", "Extreme"})
-        or (wd_risk == "Moderate" and xd_risk in {"Low", "Moderate"})
-    ):
-        return "Alert"
-    if wd_risk in {"High", "Extreme"} or (wd_risk == "Moderate" and xd_risk in {"High", "Extreme"}):
-        return "Respond"
-    return "No Data"
-
-
-def explain_operational_alert(
-    wd_risk: str,
-    xd_risk: str,
-    severity_phase: str,
-    lower_severity_phase: str = "No Data",
-) -> str:
-    alert = derive_operational_alert(wd_risk, xd_risk, severity_phase, lower_severity_phase)
-    if alert == "Monitor":
-        return f"Monitor because within-district anomaly is {wd_risk} and between-districts anomaly is {xd_risk}."
-    if alert == "Alert":
-        return f"Alert because within-district anomaly is {wd_risk} and between-districts anomaly is {xd_risk}."
-    if alert == "Respond":
-        return f"Respond because within-district anomaly is {wd_risk} and between-districts anomaly is {xd_risk}."
-    return "Operational alert unavailable because one or both anomaly classifications are missing."
-
-
-def normalise_operational_alert_labels(values: pd.Series) -> pd.Series:
-    return values.replace({
-        "Routine": "Monitor",
-        "Watch": "Alert",
-        "Prepare": "Respond",
-    })
-
-
-def ensure_observed_alert_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    if "Operational_Alert" not in df.columns:
-        df["Operational_Alert"] = df.apply(
-            lambda row: derive_operational_alert(
-                row.get("wd_risk", "No Data"),
-                row.get("xd_risk", "No Data"),
-                row.get("Severity_Phase", "No Data"),
-            ),
-            axis=1,
-        )
-    else:
-        df["Operational_Alert"] = normalise_operational_alert_labels(df["Operational_Alert"])
-    if "Operational_Alert_Why" not in df.columns:
-        df["Operational_Alert_Why"] = df.apply(
-            lambda row: explain_operational_alert(
-                row.get("wd_risk", "No Data"),
-                row.get("xd_risk", "No Data"),
-                row.get("Severity_Phase", "No Data"),
-            ),
-            axis=1,
-        )
-    return df
-
-
-def ensure_forecast_alert_columns(fc_df: pd.DataFrame) -> pd.DataFrame:
-    fc_df = fc_df.copy()
-    if fc_df.empty:
-        return fc_df
-    if "Operational_Alert" not in fc_df.columns:
-        fc_df["Operational_Alert"] = fc_df.apply(
-            lambda row: derive_operational_alert(
-                row.get("WD_Risk", "No Data"),
-                row.get("XD_Risk", "No Data"),
-                row.get("Severity_Phase", "No Data"),
-                row.get("Lower_Severity_Phase", "No Data"),
-            ),
-            axis=1,
-        )
-    else:
-        fc_df["Operational_Alert"] = normalise_operational_alert_labels(fc_df["Operational_Alert"])
-    if "Operational_Alert_Why" not in fc_df.columns:
-        fc_df["Operational_Alert_Why"] = fc_df.apply(
-            lambda row: explain_operational_alert(
-                row.get("WD_Risk", "No Data"),
-                row.get("XD_Risk", "No Data"),
-                row.get("Severity_Phase", "No Data"),
-                row.get("Lower_Severity_Phase", "No Data"),
-            ),
-            axis=1,
-        )
-    if "Composite_Risk" not in fc_df.columns:
-        fc_df["Composite_Risk"] = fc_df["Operational_Alert"]
-    return fc_df
 
 
 def normalise_col_name(name: str) -> str:
@@ -574,7 +472,7 @@ def get_severity_setup(df: pd.DataFrame) -> dict:
             "basis": f"GAM prevalence from `{whz_col}`",
             "note": "Standards-based severity uses direct GAM prevalence, aligned to IPC AMN thresholds.",
             "forecast_method": "unavailable",
-            "forecast_note": "Forecast severity phase unavailable because the model predicts GAM caseload and the dataset does not include a forecast denominator.",
+            "forecast_note": "Forecast severity phase unavailable because the model predicts GAM detection rate rather than direct GAM prevalence.",
         }
     if muac_col:
         return {
@@ -585,7 +483,7 @@ def get_severity_setup(df: pd.DataFrame) -> dict:
             "basis": f"GAM MUAC prevalence from `{muac_col}`",
             "note": "Standards-based severity uses direct GAM MUAC prevalence. IPC recommends MUAC-based phase use only where WHZ is unavailable and supported by convergence of evidence.",
             "forecast_method": "unavailable",
-            "forecast_note": "Forecast severity phase unavailable because the model predicts GAM caseload and the dataset does not include a forecast denominator.",
+            "forecast_note": "Forecast severity phase unavailable because the model predicts GAM detection rate rather than direct GAM prevalence.",
         }
     return {
         "observed_method": "unavailable",
@@ -593,9 +491,9 @@ def get_severity_setup(df: pd.DataFrame) -> dict:
         "denominator_col": None,
         "population_col": total_pop_col,
         "basis": "Unavailable",
-        "note": "Standards-based severity requires direct GAM prevalence (WHZ/MUAC). This dataset currently supports anomaly-based warning labels and GAM caseload forecasting, but not standards-based severity calculation.",
+        "note": "Standards-based severity requires direct GAM prevalence (WHZ/MUAC). This dataset currently supports anomaly-based warning labels and GAM-detection-rate forecasting, but not standards-based severity calculation.",
         "forecast_method": "unavailable",
-        "forecast_note": "Forecast severity phase unavailable because the model predicts GAM caseload and the dataset does not provide a direct GAM prevalence forecast target.",
+        "forecast_note": "Forecast severity phase unavailable because the model predicts GAM detection rate rather than direct GAM prevalence.",
     }
 
 
@@ -624,19 +522,15 @@ def build_methodology_df(df: pd.DataFrame) -> pd.DataFrame:
     rows = [
         {
             "Component": "Outcome",
-            "Definition": "GAM caseload from `Acut_Malnutrition`, interpreted as SAM + MAM.",
+            "Definition": "Observed GAM detection rate: GAM cases / children assessed x 1,000.",
         },
         {
             "Component": "Within-district anomaly",
-            "Definition": "Compares each district with its own historical distribution.",
+            "Definition": "Compares each district with its own historical distribution after at least 12 valid prior months.",
         },
         {
-            "Component": "Between-districts anomaly",
-            "Definition": "Compares districts against peer and seasonal historical patterns.",
-        },
-        {
-            "Component": "Operational alert",
-            "Definition": "Uses a fixed combination rule based on within-district and between-district anomaly levels.",
+            "Component": "Target reliability",
+            "Definition": "Excludes observed rates with a 95% Wilson interval wider than 100 per 1,000; the GAM value is not imputed.",
         },
         {
             "Component": "Data note",
@@ -646,47 +540,25 @@ def build_methodology_df(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_alert_actions_df() -> pd.DataFrame:
-    return pd.DataFrame([
-        {
-            "Anomaly Level": "Low",
-            "Percentile": "<75th percentile",
-            "Interpretation": "Within the usual range",
-        },
-        {
-            "Anomaly Level": "Moderate",
-            "Percentile": "75th-<90th percentile",
-            "Interpretation": "Higher than usual",
-        },
-        {
-            "Anomaly Level": "High",
-            "Percentile": "90th-<95th percentile",
-            "Interpretation": "Unusually high",
-        },
-        {
-            "Anomaly Level": "Extreme",
-            "Percentile": ">=95th percentile",
-            "Interpretation": "Exceptionally high",
-        },
-    ])
-
-
-def build_operational_alert_rules_df() -> pd.DataFrame:
+def build_alert_actions_df(p80: int, p95: int) -> pd.DataFrame:
     return pd.DataFrame([
         {
             "Operational Alert": "Monitor",
-            "Combination Rule": "Within = Low AND Between = (Low OR Moderate)",
-            "Action": "Routine monitoring",
+            "Percentile": f"<{p80}th percentile",
+            "Interpretation": "Within the usual range",
+            "Suggested action": "Routine monitoring",
         },
         {
             "Operational Alert": "Alert",
-            "Combination Rule": "Within = Low AND Between = (High OR Extreme), OR Within = Moderate AND Between = (Low OR Moderate)",
-            "Action": "Heightened surveillance",
+            "Percentile": f"{p80}th-<{p95}th percentile",
+            "Interpretation": "Higher than usual",
+            "Suggested action": "Investigate and validate the signal",
         },
         {
             "Operational Alert": "Respond",
-            "Combination Rule": "Within = High OR Extreme, OR Within = Moderate AND Between = (High OR Extreme)",
-            "Action": "Immediate response",
+            "Percentile": f">={p95}th percentile",
+            "Interpretation": "Exceptionally high",
+            "Suggested action": "Escalate for rapid assessment and response planning",
         },
     ])
 
@@ -736,6 +608,7 @@ def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, p
             "Completeness_Pct": round(observed_months / expected_months * 100, 1) if expected_months else np.nan,
             "Zero_GAM_Months": int(observed_target.eq(0).sum()),
             "Outlier_GAM_Months": outlier_target_rows,
+            "Imprecise_Target_Rows": int(pd.to_numeric(d.get("target_precision_qc", pd.Series(0.0, index=d.index)), errors="coerce").fillna(0).sum()),
             "Duplicate_Target_Rows": duplicate_target_rows,
             "Missing_Population": pop_missing,
             "Missing_Severity": int(d["Severity_Prevalence_Pct"].isna().sum()),
@@ -756,6 +629,7 @@ def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, p
                 "Zero_GAM_Districts": int(pd.to_numeric(g[target_col], errors="coerce").eq(0).sum()),
                 "Missing_Severity": int(g["Severity_Prevalence_Pct"].isna().sum()),
                 "Target_Outlier_Rows": int(pd.to_numeric(g["target_outlier_qc"], errors="coerce").fillna(0).sum()) if "target_outlier_qc" in g.columns else 0,
+                "Imprecise_Target_Rows": int(pd.to_numeric(g.get("target_precision_qc", pd.Series(0.0, index=g.index)), errors="coerce").fillna(0).sum()),
                 "Duplicate_Target_Rows": int(pd.to_numeric(g["target_duplicate_qc"], errors="coerce").fillna(0).sum()) if "target_duplicate_qc" in g.columns else 0,
             })
         )
@@ -771,6 +645,7 @@ def compute_data_quality_tables(df: pd.DataFrame) -> tuple[dict, pd.DataFrame, p
         "median_completeness": float(district_quality["Completeness_Pct"].median()) if not district_quality.empty else 0.0,
         "zero_gam_months": int(district_quality["Zero_GAM_Months"].sum()) if not district_quality.empty else 0,
         "outlier_gam_months": int(district_quality["Outlier_GAM_Months"].sum()) if not district_quality.empty else 0,
+        "imprecise_target_rows": int(pd.to_numeric(df.get("target_precision_qc", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0).sum()),
         "missing_severity_rows": int(df["Severity_Prevalence_Pct"].isna().sum()),
         "duplicate_rows": duplicate_rows,
     }
@@ -823,8 +698,9 @@ def transform_regression_target(values: pd.Series | np.ndarray) -> pd.Series | n
     return np.log1p(np.clip(values, a_min=0, a_max=None))
 
 
-def inverse_regression_target(values: float | np.ndarray, scaler: dict) -> float | np.ndarray:
-    restored = np.expm1(np.asarray(values) * scaler["target_std"] + scaler["target_mean"])
+def inverse_regression_target(values: float | np.ndarray, scaler: dict | None = None) -> float | np.ndarray:
+    """Restore the causal log1p GAM target; scaler is retained for call compatibility."""
+    restored = np.expm1(np.asarray(values))
     restored = np.clip(restored, a_min=0, a_max=None)
     if np.isscalar(values):
         return float(restored)
@@ -858,10 +734,6 @@ def safe_geojson(gdf: gpd.GeoDataFrame) -> dict:
 
 def colour_risk_df(df_styler, columns):
     risk_bg = {
-        "Low": RISK_COLORS["Low"],
-        "Moderate": RISK_COLORS["Moderate"],
-        "High": RISK_COLORS["High"],
-        "Extreme": RISK_COLORS["Extreme"],
         "Monitor": RISK_COLORS["Monitor"],
         "Alert": RISK_COLORS["Alert"],
         "Respond": RISK_COLORS["Respond"],
@@ -872,10 +744,6 @@ def colour_risk_df(df_styler, columns):
         "No Data": "#f0f0f0",
     }
     risk_fg = {
-        "Low": "#0b2e13",
-        "Moderate": "#4d3d00",
-        "High": "#ffffff",
-        "Extreme": "#ffffff",
         "Monitor": "#0b2e13",
         "Alert": "#4d3d00",
         "Respond": "#ffffff",
@@ -892,38 +760,6 @@ def colour_risk_df(df_styler, columns):
         return ""
 
     return df_styler.map(_style, subset=columns)
-
-
-def colour_alert_summary_df(df: pd.DataFrame):
-    risk_bg = {
-        "Low": RISK_COLORS["Low"],
-        "Moderate": RISK_COLORS["Moderate"],
-        "High": RISK_COLORS["High"],
-        "Extreme": RISK_COLORS["Extreme"],
-        "Monitor": RISK_COLORS["Monitor"],
-        "Alert": RISK_COLORS["Alert"],
-        "Respond": RISK_COLORS["Respond"],
-        "No Data": "#f0f0f0",
-    }
-    risk_fg = {
-        "Low": "#0b2e13",
-        "Moderate": "#4d3d00",
-        "High": "#ffffff",
-        "Extreme": "#ffffff",
-        "Monitor": "#0b2e13",
-        "Alert": "#4d3d00",
-        "Respond": "#ffffff",
-        "No Data": "#555",
-    }
-
-    def _style_row(row):
-        level = row.get("Level", row.get("Anomaly Level", row.get("Operational Alert")))
-        if level in risk_bg:
-            style = f"background-color:{risk_bg[level]};color:{risk_fg[level]};font-weight:bold"
-            return [style] * len(row)
-        return [""] * len(row)
-
-    return df.style.apply(_style_row, axis=1)
 
 
 def compute_spearman_correlations(data_slice: pd.DataFrame):
@@ -1183,13 +1019,7 @@ def render_compare_time_series(df: pd.DataFrame, reference_label: str = "All Dis
 
 def render_historical_risk_trend(df: pd.DataFrame, scope_label: str = "All Districts"):
     st.subheader(f"Historical Anomaly Trend - {scope_label}")
-    risk_source = st.radio(
-        "Anomaly definition",
-        ["Within-District Anomaly", "Between-Districts Anomaly"],
-        horizontal=True,
-        key="risk_trend_source",
-    )
-    risk_col = "wd_risk" if risk_source.startswith("Within") else "xd_risk"
+    risk_col = "wd_risk"
 
     monthly = (
         df.groupby(["Date", risk_col]).size()
@@ -1316,14 +1146,14 @@ def render_historical_risk_trend(df: pd.DataFrame, scope_label: str = "All Distr
 # =============================================================================
 
 @st.cache_data(show_spinner=False)
-def load_data_from_bytes(file_bytes: bytes, _hash: str) -> pd.DataFrame:
+def load_data_from_bytes(file_bytes: bytes, _hash: str, risk_thresholds: tuple[int, int]) -> pd.DataFrame:
     content = file_bytes.decode("utf-8")
-    return load_data_from_df(pd.read_csv(StringIO(content)))
+    return load_data_from_df(pd.read_csv(StringIO(content)), risk_thresholds)
 
 
 @st.cache_data(show_spinner=False)
-def load_data_from_path(path: str) -> pd.DataFrame:
-    return load_data_from_df(pd.read_csv(path))
+def load_data_from_path(path: str, risk_thresholds: tuple[int, int]) -> pd.DataFrame:
+    return load_data_from_df(pd.read_csv(path), risk_thresholds)
 
 
 def find_column(df: pd.DataFrame, candidates: tuple[str, ...] | list[str]) -> str | None:
@@ -1417,6 +1247,44 @@ def cap_outliers_by_group(df: pd.DataFrame, group_col: str, value_col: str) -> t
         clipped, group_flags = _cap_series_with_mad(df.loc[index, value_col])
         capped.loc[index] = clipped
         flags.loc[index] = group_flags.astype(float)
+    return capped, flags
+
+
+def cap_outliers_causally(
+    df: pd.DataFrame,
+    group_col: str,
+    date_col: str,
+    value_col: str,
+) -> tuple[pd.Series, pd.Series]:
+    """Cap a covariate using only earlier values from the same district."""
+    ordered = df.sort_values([date_col, group_col])
+    capped = pd.Series(np.nan, index=df.index, dtype="float64")
+    flags = pd.Series(0.0, index=df.index, dtype="float64")
+    history: dict[str, list[float]] = {}
+
+    for _, batch in ordered.groupby(date_col, sort=True):
+        for idx in batch.index:
+            value = pd.to_numeric(df.loc[idx, value_col], errors="coerce")
+            group_key = str(df.loc[idx, group_col])
+            prior_values = pd.Series(history.get(group_key, []), dtype="float64").dropna()
+            if pd.isna(value) or len(prior_values) < 4:
+                capped.loc[idx] = value
+                continue
+            median = float(prior_values.median())
+            mad = float((prior_values - median).abs().median())
+            if mad < 1e-6:
+                capped.loc[idx] = value
+                continue
+            lower, upper = median - 5.0 * mad, median + 5.0 * mad
+            flags.loc[idx] = float(value < lower or value > upper)
+            capped.loc[idx] = float(np.clip(value, lower, upper))
+
+        # Add the raw current-month observations only after all rows are capped.
+        for idx in batch.index:
+            value = pd.to_numeric(df.loc[idx, value_col], errors="coerce")
+            if pd.notna(value):
+                history.setdefault(str(df.loc[idx, group_col]), []).append(float(value))
+
     return capped, flags
 
 
@@ -1581,20 +1449,62 @@ def add_target_proxy_columns(
     return df
 
 
+def wilson_interval_per_1000(cases: pd.Series, assessed: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Return 95% Wilson interval bounds for an observed detection rate."""
+    cases = pd.to_numeric(cases, errors="coerce")
+    assessed = pd.to_numeric(assessed, errors="coerce")
+    valid = cases.notna() & cases.ge(0) & assessed.gt(0) & cases.le(assessed)
+    proportion = (cases / assessed).where(valid)
+    z = 1.959963984540054
+    denominator = 1.0 + (z ** 2 / assessed.where(valid))
+    center = (proportion + z ** 2 / (2.0 * assessed.where(valid))) / denominator
+    half_width = z * np.sqrt(
+        (proportion * (1.0 - proportion) + z ** 2 / (4.0 * assessed.where(valid)))
+        / assessed.where(valid)
+    ) / denominator
+    return (center - half_width) * GAM_RATE_SCALE, (center + half_width) * GAM_RATE_SCALE
+
+
+def add_gam_rate_target(df: pd.DataFrame, target_col: str, assessed_col: str) -> pd.DataFrame:
+    """Create an observed-only GAM detection-rate target without filling missing GAM."""
+    df = df.copy()
+    cases = pd.to_numeric(df[target_col], errors="coerce")
+    assessed = pd.to_numeric(df[assessed_col], errors="coerce") if assessed_col in df.columns else pd.Series(np.nan, index=df.index)
+    duplicate = df.get("target_duplicate_qc", pd.Series(0.0, index=df.index)).astype(bool)
+    basic_valid = cases.notna() & cases.ge(0) & assessed.gt(0) & cases.le(assessed) & ~duplicate
+    ci_lower, ci_upper = wilson_interval_per_1000(cases, assessed)
+    ci_width = ci_upper - ci_lower
+    imprecise = basic_valid & ci_width.gt(GAM_DETECTION_CI_WIDTH_MAX)
+    valid = basic_valid & ~imprecise
+
+    reason = pd.Series("", index=df.index, dtype="object")
+    reason.loc[cases.isna()] = "missing_gam"
+    reason.loc[cases.notna() & assessed.isna()] = "missing_children_assessed"
+    reason.loc[cases.notna() & assessed.notna() & assessed.le(0)] = "invalid_children_assessed"
+    reason.loc[cases.notna() & assessed.gt(0) & cases.gt(assessed)] = "gam_exceeds_children_assessed"
+    reason.loc[duplicate] = "duplicate_district_month"
+    reason.loc[imprecise] = "imprecise_detection_rate"
+
+    rate = (cases / assessed * GAM_RATE_SCALE).where(valid)
+    df["GAM_Cases_Observed"] = cases
+    df["children_assessed_observed"] = assessed
+    df["gam_detection_ci_lower"] = ci_lower
+    df["gam_detection_ci_upper"] = ci_upper
+    df["gam_detection_ci_width"] = ci_width
+    df["target_precision_qc"] = imprecise.astype(float)
+    df["Acut_Malnutrition_Observed"] = rate
+    df["target_valid"] = valid.astype(float)
+    df["target_exclusion_reason"] = reason
+    df["target_source"] = np.where(valid, "observed", "excluded")
+    df["target_proxy_confidence"] = np.where(valid, "Observed", "No Data")
+    df["target_is_observed"] = valid.astype(float)
+    df["target_training_weight"] = valid.astype(float)
+    df[target_col] = rate
+    return df
+
+
 def covariate_lag_feature_names(available_columns: list[str] | set[str]) -> list[str]:
-    available = set(available_columns)
-    names = []
-    for covariate in LAGGED_EXOG_COVARIATES:
-        if covariate in available:
-            names.extend(
-                [
-                    f"{covariate}_Lag2",
-                    f"{covariate}_Lag3",
-                    f"{covariate}_Roll2_Mean",
-                    f"{covariate}_Roll3_Mean",
-                ]
-            )
-    return names
+    return []
 
 
 def impute_modeled_covariates(df: pd.DataFrame, group_col: str, date_col: str) -> pd.DataFrame:
@@ -1605,37 +1515,35 @@ def impute_modeled_covariates(df: pd.DataFrame, group_col: str, date_col: str) -
         values = sanitize_covariate_values(col, df[col])
         df[col] = values
         df[f"{col}{MISSING_FLAG_SUFFIX}"] = values.isna().astype(float)
-        df[col], df[f"{col}{OUTLIER_FLAG_SUFFIX}"] = cap_outliers_by_group(df, group_col, col)
+        df[col], df[f"{col}{OUTLIER_FLAG_SUFFIX}"] = cap_outliers_causally(df, group_col, date_col, col)
 
     for col in [covariate for covariate in CLIMATE_COVARIATES if covariate in df.columns]:
-        df[col] = df.groupby(group_col)[col].transform(
-            lambda series: series.interpolate(method="linear", limit_direction="both")
-        )
-        df[col] = df[col].fillna(_district_month_median(df, group_col, date_col, col))
-        df[col] = df[col].fillna(_district_median(df, group_col, col))
-        df[col] = _fill_remaining(df[col])
+        df[col] = df.groupby(group_col)[col].transform(lambda series: series.ffill(limit=1))
+        df[col] = df[col].fillna(fill_group_month_median(df, df[col], group_col, date_col))
+        df[col] = df[col].fillna(0.0)
 
     for col in [covariate for covariate in CHILD_HEALTH_COVARIATES if covariate in df.columns]:
         df[col] = df.groupby(group_col)[col].transform(lambda series: series.ffill(limit=1))
-        df[col] = df[col].fillna(_district_month_median(df, group_col, date_col, col))
-        df[col] = df[col].fillna(_district_median(df, group_col, col))
-        df[col] = _fill_remaining(df[col]).clip(lower=0)
+        df[col] = df[col].fillna(fill_group_month_median(df, df[col], group_col, date_col))
+        df[col] = df[col].fillna(0.0).clip(lower=0)
 
     for col in [covariate for covariate in RATE_COVARIATES if covariate in df.columns]:
         df[col] = df.groupby(group_col)[col].transform(lambda series: series.ffill(limit=1))
-        df[col] = df[col].fillna(_district_month_median(df, group_col, date_col, col))
-        df[col] = df[col].fillna(_district_median(df, group_col, col))
-        df[col] = _fill_remaining(df[col]).clip(lower=0, upper=1)
+        df[col] = df[col].fillna(fill_group_month_median(df, df[col], group_col, date_col))
+        df[col] = df[col].fillna(0.0).clip(lower=0, upper=1)
 
     for col in [covariate for covariate in SLOW_MOVING_COVARIATES if covariate in df.columns]:
-        df[col] = df.groupby(group_col)[col].transform(lambda series: series.ffill().bfill())
-        df[col] = df[col].fillna(_district_median(df, group_col, col))
-        df[col] = _fill_remaining(df[col]).clip(lower=0)
+        df[col] = df.groupby(group_col)[col].transform(lambda series: series.ffill())
+        df[col] = df[col].fillna(fill_group_month_median(df, df[col], group_col, date_col))
+        df[col] = df[col].fillna(0.0).clip(lower=0)
 
     return df
 
 
-def load_data_from_df(df: pd.DataFrame) -> pd.DataFrame:
+def load_data_from_df(
+    df: pd.DataFrame,
+    risk_thresholds: tuple[int, int] = RISK_THRESHOLD_PROFILES["Standard: P90 / P95"],
+) -> pd.DataFrame:
     required = ["time_period", "Acut_Malnutrition", "Region_District"]
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -1643,6 +1551,8 @@ def load_data_from_df(df: pd.DataFrame) -> pd.DataFrame:
 
     df = harmonize_diarrhea_covariate(df.copy())
     df = harmonize_optional_covariates(df)
+    if "screened_u5" not in df.columns:
+        raise ValueError("Missing required column: screened_u5 (children assessed).")
 
     df["Date"] = df["time_period"].apply(parse_date)
     df["Acut_Malnutrition"] = sanitize_target_values(df["Acut_Malnutrition"])
@@ -1667,85 +1577,39 @@ def load_data_from_df(df: pd.DataFrame) -> pd.DataFrame:
     df["Display_Name"] = df["Region_Label"] + " - " + df["District_Name"]
     df = df.sort_values(["District_Name", "Date"]).reset_index(drop=True)
     df = add_target_qc_flags(df, group_col="District_Name", target_col="Acut_Malnutrition")
+    df = add_gam_rate_target(df, target_col="Acut_Malnutrition", assessed_col="screened_u5")
     df = impute_modeled_covariates(df, group_col="District_Name", date_col="Date")
-    df = add_target_proxy_columns(df, target_col="Acut_Malnutrition", group_col="District_Name", date_col="Date")
-    df = df.dropna(subset=["Acut_Malnutrition"]).copy()
+    p80_threshold, p95_threshold = risk_thresholds
 
     severity_setup = get_severity_setup(df)
     df["Severity_Basis"] = severity_setup["basis"]
     df["Severity_Prevalence_Pct"] = np.nan
     df["Severity_Phase"] = "No Data"
-    df["Caseload_per_100000_Pop"] = np.nan
     df["Denominator_Source"] = get_denominator_source_label(severity_setup)
-    df["Operational_Alert"] = "No Data"
-    df["Operational_Alert_Why"] = ""
-
-    if severity_setup["population_col"] is not None:
-        total_pop = pd.to_numeric(df[severity_setup["population_col"]], errors="coerce").replace(0, np.nan)
-        df["Caseload_per_100000_Pop"] = pd.to_numeric(df["Acut_Malnutrition"], errors="coerce") / total_pop * 100000
-
     if severity_setup["observed_method"] in {"gam_whz", "gam_muac"}:
         prevalence = pd.to_numeric(df[severity_setup["prevalence_col"]], errors="coerce")
         df["Severity_Prevalence_Pct"] = prevalence
         df["Severity_Phase"] = prevalence.apply(classify_ipc_amn_phase)
 
-    df[["wd_p50", "wd_p75", "wd_p90", "wd_p95"]] = np.nan
+    df[["wd_p80", "wd_p95"]] = np.nan
     df["wd_risk"] = "No Data"
 
     for district in df["District_Name"].unique():
         mask = df["District_Name"] == district
         d = df[mask].sort_values("Date")
         for idx in d.index:
-            past = d.loc[d["Date"] < df.loc[idx, "Date"], "Acut_Malnutrition"]
-            if len(past) >= 2:
-                p50, p75, p90, p95 = np.percentile(past, [50, 75, 90, 95])
+            value = df.loc[idx, "Acut_Malnutrition"]
+            if pd.isna(value):
+                continue
+            past = d.loc[d["Date"] < df.loc[idx, "Date"], "Acut_Malnutrition"].dropna()
+            if len(past) >= MIN_WITHIN_HISTORY_MONTHS:
+                p80, p95 = np.percentile(past, [p80_threshold, p95_threshold])
             else:
-                v = df.loc[idx, "Acut_Malnutrition"]
-                p50 = p75 = p90 = p95 = v
-            df.loc[idx, ["wd_p50", "wd_p75", "wd_p90", "wd_p95"]] = p50, p75, p90, p95
-            df.loc[idx, "wd_risk"] = classify_risk(df.loc[idx, "Acut_Malnutrition"], p50, p75, p90, p95)
-
-    df[["xd_p50", "xd_p75", "xd_p90", "xd_p95"]] = np.nan
-    df["xd_risk"] = "No Data"
-
-    for date in sorted(df["Date"].unique()):
-        month = date.month
-        curr_idx = df[df["Date"] == date].index
-        past_all = df[df["Date"] < date]
-
-        hist = past_all[past_all["Date"].dt.month == month]["Acut_Malnutrition"]
-        if len(hist) < 3:
-            season_months = [(month - 1) % 12 + 1, month, month % 12 + 1]
-            hist = past_all[past_all["Date"].dt.month.isin(season_months)]["Acut_Malnutrition"]
-        if len(hist) < 3:
-            hist = past_all["Acut_Malnutrition"]
-        if len(hist) < 3:
-            hist = df["Acut_Malnutrition"]
-
-        p50, p75, p90, p95 = np.percentile(hist, [50, 75, 90, 95])
-        for idx in curr_idx:
-            val = df.loc[idx, "Acut_Malnutrition"]
-            df.loc[idx, ["xd_p50", "xd_p75", "xd_p90", "xd_p95"]] = p50, p75, p90, p95
-            df.loc[idx, "xd_risk"] = classify_risk(val, p50, p75, p90, p95)
+                continue
+            df.loc[idx, ["wd_p80", "wd_p95"]] = p80, p95
+            df.loc[idx, "wd_risk"] = classify_risk(value, p80, p95)
 
     df["wd_score"] = df["wd_risk"].map(RISK_ORDER).fillna(0).astype(int)
-    df["xd_score"] = df["xd_risk"].map(RISK_ORDER).fillna(0).astype(int)
-    df["Operational_Alert"] = df.apply(
-        lambda row: derive_operational_alert(
-            row["wd_risk"],
-            row["xd_risk"],
-            row["Severity_Phase"],
-        ),
-        axis=1,
-    )
-    df["Operational_Alert_Why"] = df.apply(
-        lambda row: explain_operational_alert(
-            row["wd_risk"],
-            row["xd_risk"],
-            row["Severity_Phase"],
-        ),
-        axis=1,
-    )
     df["month"] = df["Date"].dt.month
     df["quarter"] = df["Date"].dt.quarter
 
@@ -1759,94 +1623,60 @@ def load_data_from_df(df: pd.DataFrame) -> pd.DataFrame:
 # Removed lower-importance / redundant engineered features:
 # Lag2_Z, Lag3_Z, Roll6_Max, Roll12_Mean, Roll12_Max, Trend, Acceleration,
 # Hist_P75, Lag1_Over_P75, Lag1_Over_P90, Lag1_Ratio_P75, Lag1_Ratio_P90.
-# Hist_P90 is retained because it helps separate High from Extreme conditions.
+# Hist_P90 is retained to capture elevated conditions below the Respond threshold.
 
 @st.cache_data(show_spinner=False)
-def build_features(_df: pd.DataFrame):
+def build_features(_df: pd.DataFrame, horizon: int = 1):
+    if horizon not in (1, 3):
+        raise ValueError("Direct forecast horizon must be 1 or 3 months.")
     records = []
 
     for district in _df["District_Name"].unique():
         d = _df[_df["District_Name"] == district].sort_values("Date").reset_index(drop=True)
         adm = d["Acut_Malnutrition"].astype(float).values
 
-        for i in range(3, len(d)):
-            hist = adm[:i]
-            roll3 = adm[i - 3:i]
-            roll6 = adm[max(0, i - 6):i]
-
-            hist_mu = float(np.mean(hist))
-            hist_sd = float(np.std(hist)) if np.std(hist) > 1e-6 else 1.0
-            hist_p90, hist_p95 = np.percentile(hist, [90, 95])
-
-            lag1 = float(adm[i - 1])
-            lag2 = float(adm[i - 2])
-            lag3 = float(adm[i - 3])
+        eligible_indices = [
+            i for i in range(2, len(d) - horizon)
+            if np.isfinite(adm[i - 2:i + 1]).all() and np.isfinite(adm[i + horizon])
+        ]
+        for i in eligible_indices:
+            target_index = i + horizon
+            hist = adm[:i + 1][np.isfinite(adm[:i + 1])]
+            roll3 = adm[i - 2:i + 1]
+            lag1 = float(adm[i])
+            lag2 = float(adm[i - 1])
+            lag3 = float(adm[i - 2])
 
             same_month_hist = d.loc[
-                (d.index < i) & (d["Date"].dt.month == d.loc[i, "Date"].month),
+                (d.index <= i) & (d["Date"].dt.month == d.loc[target_index, "Date"].month),
                 "Acut_Malnutrition",
-            ].astype(float)
+            ].dropna().astype(float)
             seasonal_lag_12 = float(same_month_hist.iloc[-1]) if len(same_month_hist) else lag1
-
-            recent_scores = d.loc[i - 3:i - 1, "wd_score"].astype(float).values
-            recent_high = np.isin(recent_scores, [2, 3]).sum()
 
             row = {
                 "District": district,
-                "Date": d.loc[i, "Date"],
-                # Calendar
-                "Month": d.loc[i, "Date"].month,
-                "Quarter": d.loc[i, "Date"].quarter,
-                "Month_Sin": np.sin(2 * np.pi * d.loc[i, "Date"].month / 12),
-                "Month_Cos": np.cos(2 * np.pi * d.loc[i, "Date"].month / 12),
-                # Raw lags
+                "Date": d.loc[target_index, "Date"],
+                "Forecast_Horizon": horizon,
+                "Month_Sin": np.sin(2 * np.pi * d.loc[target_index, "Date"].month / 12),
+                "Month_Cos": np.cos(2 * np.pi * d.loc[target_index, "Date"].month / 12),
                 "Lag1": lag1,
                 "Lag2": lag2,
                 "Lag3": lag3,
-                # Standardised lag
-                "Lag1_Z": (lag1 - hist_mu) / hist_sd,
-                # Rolling windows
                 "Roll3_Mean": float(np.mean(roll3)),
-                "Roll3_Std": float(np.std(roll3)),
-                "Roll6_Mean": float(np.mean(roll6)),
-                # Seasonal reference
                 "Seasonal_Lag12": seasonal_lag_12,
-                # Historical distribution
-                "Hist_Mean": hist_mu,
-                "Hist_Std": hist_sd,
-                "Hist_P90": hist_p90,
-                "Hist_P95": hist_p95,
-                # Threshold exceedance / ratio
-                "Lag1_Over_P95": lag1 - hist_p95,
-                "Lag1_Ratio_P95": lag1 / (hist_p95 + 1e-6),
-                # Risk history
-                "Recent_WD_High_Count": recent_high,
-                "WD_Score_Lag": d.loc[i - 1, "wd_score"],
-                "XD_Score_Lag": d.loc[i - 1, "xd_score"],
-                "Target_Adm": adm[i],
-                "Target_Adm_Observed": float(d.loc[i, "Acut_Malnutrition_Observed"]) if pd.notna(d.loc[i, "Acut_Malnutrition_Observed"]) else np.nan,
-                "Target_Source": d.loc[i, "target_source"] if "target_source" in d.columns else "observed",
-                "Target_Proxy_Confidence": d.loc[i, "target_proxy_confidence"] if "target_proxy_confidence" in d.columns else "Observed",
-                "Target_Is_Observed": float(d.loc[i, "target_is_observed"]) if "target_is_observed" in d.columns else 1.0,
-                "Target_Training_Weight": float(d.loc[i, "target_training_weight"]) if "target_training_weight" in d.columns else 1.0,
-                "Target_WD_Risk": d.loc[i, "wd_risk"],
-                "Target_XD_Risk": d.loc[i, "xd_risk"],
+                "Target_Adm": adm[target_index],
+                "Target_Adm_Observed": float(d.loc[target_index, "Acut_Malnutrition_Observed"]) if pd.notna(d.loc[target_index, "Acut_Malnutrition_Observed"]) else np.nan,
+                "Target_Source": d.loc[target_index, "target_source"] if "target_source" in d.columns else "observed",
+                "Target_Proxy_Confidence": d.loc[target_index, "target_proxy_confidence"] if "target_proxy_confidence" in d.columns else "Observed",
+                "Target_Is_Observed": float(d.loc[target_index, "target_is_observed"]) if "target_is_observed" in d.columns else 1.0,
+                "Target_Training_Weight": float(d.loc[target_index, "target_training_weight"]) if "target_training_weight" in d.columns else 1.0,
+                "Target_WD_Risk": d.loc[target_index, "wd_risk"],
             }
 
-            # Passthrough numeric covariates, lagged by one month.
-            for col in d.columns:
-                if col not in row and col not in _EXCLUDE_FROM_FEATURES:
-                    if pd.api.types.is_numeric_dtype(d[col]):
-                        row[col] = d.loc[i - 1, col]
-
-            for covariate in LAGGED_EXOG_COVARIATES:
-                if covariate not in d.columns:
-                    continue
-                history = d.loc[i - 3:i - 1, covariate].astype(float).to_numpy()
-                row[f"{covariate}_Lag2"] = float(history[-2])
-                row[f"{covariate}_Lag3"] = float(history[-3])
-                row[f"{covariate}_Roll2_Mean"] = float(np.mean(history[-2:]))
-                row[f"{covariate}_Roll3_Mean"] = float(np.mean(history))
+            for covariate in CORE_COVARIATES:
+                for feature in (covariate, f"{covariate}{MISSING_FLAG_SUFFIX}", f"{covariate}{OUTLIER_FLAG_SUFFIX}"):
+                    if feature in d.columns:
+                        row[feature] = float(d.loc[i - 1, feature])
 
             records.append(row)
 
@@ -1854,53 +1684,24 @@ def build_features(_df: pd.DataFrame):
     required_cols = [
         "District",
         "Date",
+        "Forecast_Horizon",
         "Target_Adm",
         "Target_WD_Risk",
-        "Target_XD_Risk",
     ]
     feat_df = feat_df.dropna(subset=[col for col in required_cols if col in feat_df.columns]).reset_index(drop=True)
-    skewed_feature_cols = SKEWED_COVS + covariate_lag_feature_names([c for c in LAGGED_EXOG_COVARIATES if c in feat_df.columns and c in CHILD_HEALTH_COVARIATES])
+    skewed_feature_cols = [covariate for covariate in CORE_COVARIATES if covariate in SKEWED_COVS]
     feat_df = apply_log_transform(feat_df, skewed_feature_cols)
 
-    scale_cols = [
-        "Lag1", "Lag2", "Lag3",
-        "Roll3_Mean", "Roll6_Mean",
-        "Seasonal_Lag12",
-        "Hist_Mean", "Hist_Std",
-        "Hist_P90", "Hist_P95",
-        "Lag1_Over_P95",
-    ]
-
-    scalers = {}
-    feat_df["Target_Adm_Transformed"] = np.nan
-    for district in feat_df["District"].unique():
-        mask = feat_df["District"] == district
-        baseline = feat_df.loc[mask, "Lag1"].astype(float)
-        feature_mu = float(baseline.mean())
-        feature_std = float(baseline.std())
-        if feature_std < 1e-6:
-            feature_std = 1.0
-
-        target_log = transform_regression_target(feat_df.loc[mask, "Target_Adm"].astype(float))
-        target_mu = float(target_log.mean())
-        target_std = float(target_log.std())
-        if target_std < 1e-6:
-            target_std = 1.0
-
-        scalers[district] = {
-            "feature_mean": feature_mu,
-            "feature_std": feature_std,
-            "target_mean": target_mu,
-            "target_std": target_std,
-        }
-
-        for col in scale_cols:
-            if col in feat_df.columns:
-                feat_df.loc[mask, col] = (feat_df.loc[mask, col] - feature_mu) / feature_std
-        feat_df.loc[mask, "Target_Adm_Transformed"] = (target_log - target_mu) / target_std
+    # Random forests do not require scaled inputs. Keeping the raw lag features
+    # and a log1p target means a row is independent of later district outcomes.
+    scalers = {
+        district: {"feature_mean": 0.0, "feature_std": 1.0, "target_mean": 0.0, "target_std": 1.0}
+        for district in feat_df["District"].unique()
+    }
+    feat_df["Target_Adm_Transformed"] = transform_regression_target(feat_df["Target_Adm"].astype(float))
 
     for col in feat_df.columns:
-        if col not in {"District", "Date", "Target_WD_Risk", "Target_XD_Risk"}:
+        if col not in {"District", "Date", "Target_WD_Risk"}:
             if pd.api.types.is_integer_dtype(feat_df[col]):
                 feat_df[col] = feat_df[col].astype("float64")
 
@@ -1915,9 +1716,14 @@ def build_features(_df: pd.DataFrame):
         "Target_Is_Observed",
         "Target_Training_Weight",
         "Target_WD_Risk",
-        "Target_XD_Risk",
     }
-    feature_cols = [c for c in feat_df.columns if c not in targets]
+    covariate_features = [
+        feature
+        for covariate in CORE_COVARIATES
+        for feature in (covariate, f"{covariate}{MISSING_FLAG_SUFFIX}", f"{covariate}{OUTLIER_FLAG_SUFFIX}")
+        if feature in feat_df.columns
+    ]
+    feature_cols = CORE_GAM_FEATURES + covariate_features
     return feat_df, feature_cols, scalers
 
 
@@ -2003,7 +1809,7 @@ def run_regression_cv(_feat_df: pd.DataFrame, feature_cols: list[str], _scalers:
             resid_rows.append({
                 "District": meta.iloc[j]["District"],
                 "Date": meta.iloc[j]["Date"],
-                "XD_Risk": meta.iloc[j]["Target_XD_Risk"],
+                "WD_Risk": meta.iloc[j]["Target_WD_Risk"],
                 "Target_Source": meta.iloc[j]["Target_Source"],
                 "Actual": meta.iloc[j]["Target_Adm_Observed"],
                 "Predicted": pred_raw[j],
@@ -2032,7 +1838,7 @@ def run_regression_cv(_feat_df: pd.DataFrame, feature_cols: list[str], _scalers:
         "residuals": residuals,
         "n_folds": len(mae_cv),
         "model": final_model,
-        "target_transform": "log1p raw caseload, z-scored within district",
+        "target_transform": "log1p GAM detection rate per 1,000 assessed children",
     }
 
 
@@ -2041,23 +1847,22 @@ def run_regression_cv(_feat_df: pd.DataFrame, feature_cols: list[str], _scalers:
 # =============================================================================
 
 class Forecaster:
-    HORIZON = 3
     # Engineered features computed at inference time. Keep in sync with build_features.
-    BASE = [
-        "Month", "Quarter", "Month_Sin", "Month_Cos",
-        "Lag1", "Lag2", "Lag3",
-        "Lag1_Z",
-        "Roll3_Mean", "Roll3_Std", "Roll6_Mean",
-        "Seasonal_Lag12",
-        "Hist_Mean", "Hist_Std", "Hist_P90", "Hist_P95",
-        "Lag1_Over_P95",
-        "Lag1_Ratio_P95",
-        "Recent_WD_High_Count", "WD_Score_Lag", "XD_Score_Lag",
-    ]
+    BASE = CORE_GAM_FEATURES
 
-    def fit(self, feat_df: pd.DataFrame, feature_cols: list[str], scalers: dict):
+    def __init__(self, horizon: int):
+        self.horizon = horizon
+
+    def fit(
+        self,
+        feat_df: pd.DataFrame,
+        feature_cols: list[str],
+        scalers: dict,
+        risk_thresholds: tuple[int, int],
+    ):
         self.feature_cols = feature_cols
         self.scalers = scalers
+        self.risk_thresholds = risk_thresholds
         self.extra = [c for c in feature_cols if c not in self.BASE]
 
         valid = feat_df.dropna(subset=["Target_Adm_Transformed"]).copy()
@@ -2074,158 +1879,174 @@ class Forecaster:
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         rows = []
         severity_setup = get_severity_setup(df)
+        forecast_origin = df["Date"].max()
+        p80_threshold, p95_threshold = self.risk_thresholds
 
         for district in df["District_Name"].unique():
-            d = df[df["District_Name"] == district].sort_values("Date")
+            d = df[df["District_Name"] == district].dropna(subset=["Acut_Malnutrition"]).sort_values("Date")
             if len(d) < 3:
                 continue
 
             scaler = self.scalers.get(district)
             if scaler is None:
                 continue
-            mu = scaler["feature_mean"]
-            sg = max(scaler["feature_std"], 1e-6)
-
             hist_adm = list(d["Acut_Malnutrition"].astype(float).values)
-            hist_wd = list(d["wd_score"].values)
-            hist_xd = list(d["xd_score"].values)
-            covariate_histories = {
-                covariate: list(d[covariate].astype(float).values)
-                for covariate in LAGGED_EXOG_COVARIATES
-                if covariate in d.columns
+            has_sufficient_within_history = len(hist_adm) >= MIN_WITHIN_HISTORY_MONTHS
+            extra_histories = {
+                feature: list(d[feature].astype(float).values)
+                for feature in self.extra
+                if feature in d.columns
             }
             last_date = d["Date"].iloc[-1]
+            if last_date != forecast_origin:
+                continue
             extras = self.extra_vals.get(district, {c: 0.0 for c in self.extra})
-            total_pop_col = severity_setup["population_col"]
-            total_pop = np.nan
-            if total_pop_col is not None and total_pop_col in d.columns:
-                total_pop = pd.to_numeric(d[total_pop_col], errors="coerce").dropna().iloc[-1] if not d[total_pop_col].dropna().empty else np.nan
+            fd = forecast_origin + pd.DateOffset(months=self.horizon)
+            hist = np.array(hist_adm, dtype=float)
+            roll3 = hist[-3:]
+            risk_p80, risk_p95 = np.percentile(hist, self.risk_thresholds)
+            lag1, lag2, lag3 = hist[-1], hist[-2], hist[-3]
 
-            for step in range(1, self.HORIZON + 1):
-                fd = last_date + pd.DateOffset(months=step)
-                hist = np.array(hist_adm, dtype=float)
-                roll3 = hist[-3:]
-                roll6 = hist[-6:] if len(hist) >= 6 else roll3
-                hist_mu = float(hist.mean())
-                hist_sd = float(hist.std()) if hist.std() > 1e-6 else 1.0
-                #p90, p95 = np.percentile(hist, [90, 95])
-                p75, p90, p95 = np.percentile(hist, [75, 90, 95])
-                lag1, lag2, lag3 = hist[-1], hist[-2], hist[-3]
+            base_raw = {
+                "Month_Sin": np.sin(2 * np.pi * fd.month / 12),
+                "Month_Cos": np.cos(2 * np.pi * fd.month / 12),
+                "Lag1": lag1,
+                "Lag2": lag2,
+                "Lag3": lag3,
+                "Roll3_Mean": roll3.mean(),
+                "Seasonal_Lag12": hist[-12] if len(hist) >= 12 else lag1,
+            }
+            dynamic_extras = extras.copy()
+            for feature, history in extra_histories.items():
+                if not history:
+                    continue
+                value = float(history[-1])
+                dynamic_extras[feature] = float(np.log1p(max(value, 0.0))) if feature in SKEWED_COVS else value
 
-                base_raw = {
-                    # Calendar
-                    "Month": fd.month,
-                    "Quarter": fd.quarter,
-                    "Month_Sin": np.sin(2 * np.pi * fd.month / 12),
-                    "Month_Cos": np.cos(2 * np.pi * fd.month / 12),
-                    # Raw lags
-                    "Lag1": (lag1 - mu) / sg,
-                    "Lag2": (lag2 - mu) / sg,
-                    "Lag3": (lag3 - mu) / sg,
-                    # Standardised lag
-                    "Lag1_Z": (lag1 - hist_mu) / hist_sd,
-                    # Rolling windows
-                    "Roll3_Mean": (roll3.mean() - mu) / sg,
-                    "Roll3_Std": roll3.std(),
-                    "Roll6_Mean": (roll6.mean() - mu) / sg,
-                    # Seasonal reference
-                    "Seasonal_Lag12": (hist[-12] - mu) / sg if len(hist) >= 12 else (lag1 - mu) / sg,
-                    # Historical distribution
-                    "Hist_Mean": (hist_mu - mu) / sg,
-                    "Hist_Std": (hist_sd - mu) / sg,
-                    "Hist_P90": (p90 - mu) / sg,
-                    "Hist_P95": (p95 - mu) / sg,
-                    # Threshold exceedance / ratio
-                    "Lag1_Over_P95": (lag1 - p95) / sg,
-                    "Lag1_Ratio_P95": lag1 / (p95 + 1e-6),
-                    # Risk history
-                    "Recent_WD_High_Count": np.isin(hist_wd[-3:], [2, 3]).sum(),
-                    "WD_Score_Lag": hist_wd[-1],
-                    "XD_Score_Lag": hist_xd[-1],
-                }
-                dynamic_extras = extras.copy()
-                for covariate, history in covariate_histories.items():
-                    if not history:
-                        continue
-                    dynamic_extras[covariate] = float(history[-1])
-                    dynamic_extras[f"{covariate}_Lag2"] = float(history[-2] if len(history) >= 2 else history[-1])
-                    dynamic_extras[f"{covariate}_Lag3"] = float(history[-3] if len(history) >= 3 else history[-1])
-                    dynamic_extras[f"{covariate}_Roll2_Mean"] = float(np.mean(history[-2:])) if len(history) >= 2 else float(history[-1])
-                    dynamic_extras[f"{covariate}_Roll3_Mean"] = float(np.mean(history[-3:])) if len(history) >= 3 else float(np.mean(history))
+            fv = np.array([[{**base_raw, **dynamic_extras}.get(c, 0.0) for c in self.feature_cols]])
+            pred_transformed = float(self.reg.predict(fv)[0])
+            pred_raw = round(float(inverse_regression_target(pred_transformed, scaler)), 2)
 
-                fv = np.array([[{**base_raw, **dynamic_extras}.get(c, 0.0) for c in self.feature_cols]])
-                pred_transformed = float(self.reg.predict(fv)[0])
-                pred_raw = round(inverse_regression_target(pred_transformed, scaler))
+            tree_preds = np.array([t.predict(fv)[0] for t in self.reg.estimators_])
+            tree_preds_raw = inverse_regression_target(tree_preds, scaler)
+            lo, hi = np.percentile(tree_preds_raw, [10, 90])
+            lo = max(0.0, round(float(lo), 2))
+            hi = max(lo, round(float(hi), 2))
 
-                tree_preds = np.array([t.predict(fv)[0] for t in self.reg.estimators_])
-                tree_preds_raw = inverse_regression_target(tree_preds, scaler)
-                lo, hi = np.percentile(tree_preds_raw, [10, 90])
-                lo = max(0, round(lo))
-                hi = max(lo, round(hi))
-
-                p50 = np.percentile(hist, 50)
-                wd_risk = classify_risk(pred_raw, p50, p75, p90, p95)
-                pred_rate = pred_raw / total_pop * 100000 if pd.notna(total_pop) and total_pop > 0 else np.nan
-                lower_severity_phase = "No Data"
-                severity_phase = "No Data"
-                rows.append({
-                    "District": district,
-                    "Date": fd,
-                    "Month_Year": fd.strftime("%B %Y"),
-                    "Step": step,
-                    "Predicted": int(pred_raw),
-                    "Lower_80": int(lo),
-                    "Upper_80": int(hi),
-                    "WD_Risk": wd_risk,
-                    "XD_Risk": "No Data",
-                    "Composite_Risk": "No Data",
-                    "Operational_Alert": "No Data",
-                    "Operational_Alert_Why": "",
-                    "Severity_Prevalence_Pct": np.nan,
-                    "Severity_Phase": severity_phase,
-                    "Lower_Severity_Phase": lower_severity_phase,
-                    "Severity_Basis": severity_setup["forecast_note"],
-                    "Predicted_Caseload_per_100000_Pop": pred_rate,
-                })
-
-                hist_adm.append(pred_raw)
-                hist_wd.append(RISK_ORDER.get(wd_risk, 0))
-                hist_xd.append(0)
-                for covariate, history in covariate_histories.items():
-                    history.append(float(history[-1]))
+            wd_risk = classify_risk(pred_raw, risk_p80, risk_p95) if has_sufficient_within_history else "No Data"
+            rows.append({
+                "District": district,
+                "Date": fd,
+                "Month_Year": fd.strftime("%B %Y"),
+                "Step": self.horizon,
+                "Predicted": pred_raw,
+                "Lower_80": lo,
+                "Upper_80": hi,
+                "WD_Risk": wd_risk,
+                "Severity_Prevalence_Pct": np.nan,
+                "Severity_Phase": "No Data",
+                "Lower_Severity_Phase": "No Data",
+                "Severity_Basis": severity_setup["forecast_note"],
+                "Last_Observed_Date": last_date,
+                "Forecast_Gap_Months": 0,
+            })
 
         result = pd.DataFrame(rows)
+        # Direct models emit only their requested horizon; no intermediate prediction is reused.
+        result = result[result["Date"] > forecast_origin].copy()
         if result.empty:
             return result
-
-        all_hist_vals = df["Acut_Malnutrition"].dropna().values
-        for month_date in result["Date"].unique():
-            mask = result["Date"] == month_date
-            preds = result.loc[mask, "Predicted"].values
-            if len(preds) >= 3:
-                xp50, xp75, xp90, xp95 = np.percentile(preds, [50, 75, 90, 95])
-            else:
-                xp50, xp75, xp90, xp95 = np.percentile(all_hist_vals, [50, 75, 90, 95])
-            for idx in result[mask].index:
-                pred = result.loc[idx, "Predicted"]
-                xd_risk = classify_risk(pred, xp50, xp75, xp90, xp95)
-                wd_risk = result.loc[idx, "WD_Risk"]
-                severity_phase = result.loc[idx, "Severity_Phase"]
-                lower_severity_phase = result.loc[idx, "Lower_Severity_Phase"]
-                operational_alert = derive_operational_alert(wd_risk, xd_risk, severity_phase, lower_severity_phase)
-                operational_alert_why = explain_operational_alert(wd_risk, xd_risk, severity_phase, lower_severity_phase)
-                result.loc[idx, "XD_Risk"] = xd_risk
-                result.loc[idx, "Operational_Alert"] = operational_alert
-                result.loc[idx, "Operational_Alert_Why"] = operational_alert_why
-                result.loc[idx, "Composite_Risk"] = operational_alert
 
         return result
 
 
 @st.cache_data(show_spinner=False)
-def run_forecast(_feat_df, feature_cols, _scalers, _df, data_key):
-    fc = Forecaster().fit(_feat_df, feature_cols, _scalers)
+def run_forecast(_feat_df, feature_cols, _scalers, _df, data_key, risk_thresholds: tuple[int, int], horizon: int):
+    fc = Forecaster(horizon).fit(_feat_df, feature_cols, _scalers, risk_thresholds)
     return fc.predict(_df)
+
+
+def _ssm_one_step_predictions(values: np.ndarray) -> list[tuple[float, float]]:
+    """Causal local-level/trend filter used for the state-space benchmark."""
+    if len(values) < 4:
+        return []
+    level, trend = float(values[0]), 0.0
+    predictions = []
+    for value in values[1:]:
+        predicted = max(0.0, level + trend)
+        predictions.append((predicted, float(value)))
+        innovation = float(value) - predicted
+        level = predicted + 0.35 * innovation
+        trend = trend + 0.12 * innovation
+    return predictions
+
+
+@st.cache_data(show_spinner=False)
+def run_ssm_forecast(_df: pd.DataFrame, risk_thresholds: tuple[int, int]) -> tuple[pd.DataFrame, float]:
+    rows, errors = [], []
+    origin = _df["Date"].max()
+    for district, district_df in _df.groupby("District_Name"):
+        observed = district_df.dropna(subset=["Acut_Malnutrition"]).sort_values("Date")
+        history = observed["Acut_Malnutrition"].astype(float).to_numpy()
+        if len(history) < 3:
+            continue
+        errors.extend(abs(prediction - actual) for prediction, actual in _ssm_one_step_predictions(history))
+        level, trend = float(history[0]), 0.0
+        for value in history[1:]:
+            predicted = level + trend
+            innovation = float(value) - predicted
+            level = predicted + 0.35 * innovation
+            trend = trend + 0.12 * innovation
+        residual_sd = float(np.std([actual - prediction for prediction, actual in _ssm_one_step_predictions(history)]))
+        residual_sd = max(residual_sd, 1.0)
+        last_date = observed["Date"].iloc[-1]
+        if last_date != origin:
+            continue
+        p90, p95 = np.percentile(history, risk_thresholds)
+        for horizon in (1, 3):
+            forecast_date = origin + pd.DateOffset(months=horizon)
+            point = max(0.0, level + trend * min(horizon, 3))
+            rows.append({
+                "District": district,
+                "Date": forecast_date,
+                "Month_Year": forecast_date.strftime("%B %Y"),
+                "Step": horizon,
+                "Predicted": round(point, 2),
+                "Lower_80": round(max(0.0, point - 1.28 * residual_sd * np.sqrt(horizon)), 2),
+                "Upper_80": round(point + 1.28 * residual_sd * np.sqrt(horizon), 2),
+                "WD_Risk": classify_risk(point, p90, p95) if len(history) >= MIN_WITHIN_HISTORY_MONTHS else "No Data",
+                "Alert_P90": p90,
+                "Alert_P95": p95,
+                "Model_Source": "State-Space Model",
+                "Last_Observed_Date": last_date,
+                "Forecast_Gap_Months": 0,
+            })
+    forecast = pd.DataFrame(rows)
+    if not forecast.empty:
+        forecast = forecast[forecast["Date"] > origin].copy()
+    return forecast, float(np.mean(errors)) if errors else np.nan
+
+
+def build_ensemble_forecast(rf_df: pd.DataFrame, ssm_df: pd.DataFrame, rf_mae: float, ssm_mae: float) -> tuple[pd.DataFrame, float]:
+    if rf_df.empty or not np.isfinite(rf_mae):
+        return ssm_df.copy(), 0.0
+    if ssm_df.empty or not np.isfinite(ssm_mae):
+        return rf_df.copy(), 1.0
+    rf_weight = ssm_mae / max(rf_mae + ssm_mae, 1e-6)
+    merged = rf_df.merge(ssm_df, on=["District", "Date"], suffixes=("_RF", "_SSM"))
+    rows = []
+    for _, row in merged.iterrows():
+        point = rf_weight * row["Predicted_RF"] + (1 - rf_weight) * row["Predicted_SSM"]
+        p90, p95 = row["Alert_P90"], row["Alert_P95"]
+        rows.append({
+            "District": row["District"], "Date": row["Date"], "Month_Year": row["Month_Year_RF"], "Step": row["Step_RF"],
+            "Predicted": round(point, 2),
+            "Lower_80": round(rf_weight * row["Lower_80_RF"] + (1 - rf_weight) * row["Lower_80_SSM"], 2),
+            "Upper_80": round(rf_weight * row["Upper_80_RF"] + (1 - rf_weight) * row["Upper_80_SSM"], 2),
+            "WD_Risk": classify_risk(point, p90, p95) if pd.notna(p90) else "No Data",
+            "Alert_P90": p90, "Alert_P95": p95, "Model_Source": f"MAE-Weighted RF + SSM Blend (RF {rf_weight:.0%})",
+        })
+    return pd.DataFrame(rows), rf_weight
 
 
 # =============================================================================
@@ -2250,11 +2071,15 @@ def load_and_match_geodf(geo_file, df: pd.DataFrame, name_col: str):
     return gdf, matched
 
 
-def render_map(gdf, data, risk_col, title, hover_cols=None):
+def render_map(gdf, data, risk_col, title, hover_cols=None, levels=None):
     merged = gdf.merge(data, on="District_Name", how="left")
-    levels = ordered_levels_for_col(risk_col)
+    levels = levels or [*ordered_levels_for_col(risk_col), "No Data"]
     if risk_col in merged.columns:
-        merged[risk_col] = pd.Categorical(merged[risk_col], categories=levels, ordered=True)
+        merged[risk_col] = pd.Categorical(
+            merged[risk_col].fillna("No Data"),
+            categories=levels,
+            ordered=True,
+        )
     gj = safe_geojson(merged)
     hover_cols = hover_cols or []
     hover_data = {c: True for c in hover_cols if c in merged.columns}
@@ -2287,9 +2112,8 @@ def render_delta_map(gdf, fc_map, risk_col, months):
     first_df = fc_map[fc_map["Month_Year"] == first][["District_Name", risk_col]].rename(columns={risk_col: "Risk_First"})
     last_df = fc_map[fc_map["Month_Year"] == last][["District_Name", risk_col]].rename(columns={risk_col: "Risk_Last"})
     delta = first_df.merge(last_df, on="District_Name", how="inner")
-    score_order = OPERATIONAL_ALERT_ORDER if risk_col in {"Operational_Alert", "Composite_Risk"} else RISK_ORDER
-    delta["Score_First"] = delta["Risk_First"].map(score_order).fillna(0).astype(int)
-    delta["Score_Last"] = delta["Risk_Last"].map(score_order).fillna(0).astype(int)
+    delta["Score_First"] = delta["Risk_First"].map(RISK_ORDER).fillna(0).astype(int)
+    delta["Score_Last"] = delta["Risk_Last"].map(RISK_ORDER).fillna(0).astype(int)
     delta["Delta"] = delta["Score_Last"] - delta["Score_First"]
     delta["Delta_Label"] = delta["Delta"].apply(lambda x: f"+{x}" if x > 0 else str(x))
     delta["Direction"] = delta["Delta"].apply(lambda x: "Worsening" if x > 0 else ("Improving" if x < 0 else "No change"))
@@ -2385,7 +2209,7 @@ def main():
     )
     inject_app_styles()
     st.title("Acute Malnutrition Forecasting Tool")
-    st.caption("A tool for district anomaly monitoring, forecasting, and operational alerts")
+    st.caption("A tool for district anomaly monitoring and forecasting")
 
     with st.sidebar:
         st.header("Data")
@@ -2420,8 +2244,26 @@ def main():
                 st.warning(f"Could not preview GeoJSON: {e}")
 
         st.markdown("---")
+        st.markdown("**Anomaly threshold profile**")
+        threshold_profile = st.selectbox(
+            "Risk sensitivity",
+            options=list(RISK_THRESHOLD_PROFILES),
+            help="Changes percentile bands for observed and forecast anomaly labels. The GAM detection-rate target is unchanged.",
+        )
+        risk_thresholds = RISK_THRESHOLD_PROFILES[threshold_profile]
+        forecast_model_choice = st.selectbox(
+            "Forecast model",
+            FORECAST_MODEL_OPTIONS,
+            help="The blend weights Random Forest and the causal state-space model by their available historical MAE estimates.",
+        )
+        p80_threshold, p95_threshold = risk_thresholds
         st.markdown("**Risk rule**")
-        st.caption("Within-district compares each district with its own history. Between-districts compares districts with peers. Anomaly classification uses Low (<75th percentile), Moderate (75th-<90th percentile), High (90th-<95th percentile), and Extreme (>=95th percentile).")
+        st.caption(
+            "Within-district compares each district with its own historical GAM detection-rate distribution. "
+            f"Operational Alert uses Monitor (<{p80_threshold}th percentile), "
+            f"Alert ({p80_threshold}th-<{p95_threshold}th percentile), and "
+            f"Respond (>={p95_threshold}th percentile)."
+        )
 
     try:
         if csv_mode == "Upload CSV":
@@ -2429,33 +2271,55 @@ def main():
                 st.info("Upload your CSV to start.")
                 return
             raw = csv_file.read()
-            data_key = file_hash(raw)
-            df = load_data_from_bytes(raw, data_key)
+            source_key = file_hash(raw)
+            data_key = f"{source_key}|{threshold_profile}|{forecast_model_choice}"
+            df = load_data_from_bytes(raw, source_key, risk_thresholds)
         else:
-            data_key = csv_path
-            df = load_data_from_path(csv_path)
+            data_key = f"{csv_path}|{threshold_profile}|{forecast_model_choice}"
+            df = load_data_from_path(csv_path, risk_thresholds)
     except Exception as e:
         st.error(f"Could not load CSV: {e}")
         return
 
-    df = ensure_observed_alert_columns(df)
-
     with st.spinner("Engineering district-relative features..."):
-        feat_df, feature_cols, scalers = build_features(df)
+        feat_df, feature_cols, scalers = build_features(df, horizon=1)
+        feat_df_h3, feature_cols_h3, scalers_h3 = build_features(df, horizon=3)
 
     if (
         st.session_state.get("_data_key") != data_key
         or st.session_state.get("_model_schema_version") != MODEL_SCHEMA_VERSION
     ):
-        with st.spinner("Training Random Forest models and generating 3-month forecasts..."):
+        with st.spinner("Training direct 1- and 3-month Random Forest forecasts..."):
             st.session_state["reg_eval"] = run_regression_cv(feat_df, feature_cols, scalers)
-            st.session_state["fc_df"] = run_forecast(feat_df, feature_cols, scalers, df, data_key)
+            st.session_state["reg_eval_h3"] = run_regression_cv(feat_df_h3, feature_cols_h3, scalers_h3)
+            rf_forecast = pd.concat([
+                run_forecast(feat_df, feature_cols, scalers, df, data_key, risk_thresholds, horizon=1),
+                run_forecast(feat_df_h3, feature_cols_h3, scalers_h3, df, data_key, risk_thresholds, horizon=3),
+            ], ignore_index=True)
+            ssm_forecast, ssm_mae = run_ssm_forecast(df, risk_thresholds)
+            if forecast_model_choice == "Random Forest":
+                st.session_state["fc_df"] = rf_forecast
+            elif forecast_model_choice == "State-Space Model":
+                st.session_state["fc_df"] = ssm_forecast
+            else:
+                ensemble_parts, ensemble_weights = [], {}
+                for horizon, evaluation in ((1, st.session_state["reg_eval"]), (3, st.session_state["reg_eval_h3"])):
+                    blended, weight = build_ensemble_forecast(
+                        rf_forecast[rf_forecast["Step"] == horizon],
+                        ssm_forecast[ssm_forecast["Step"] == horizon],
+                        evaluation.get("cv_mae", np.nan),
+                        ssm_mae,
+                    )
+                    ensemble_parts.append(blended)
+                    ensemble_weights[horizon] = weight
+                st.session_state["fc_df"] = pd.concat(ensemble_parts, ignore_index=True)
+                st.session_state["ensemble_rf_weight"] = ensemble_weights
+            st.session_state["ssm_mae"] = ssm_mae
             st.session_state["_data_key"] = data_key
             st.session_state["_model_schema_version"] = MODEL_SCHEMA_VERSION
 
     reg_eval = st.session_state["reg_eval"]
-    fc_df = ensure_forecast_alert_columns(st.session_state["fc_df"])
-    st.session_state["fc_df"] = fc_df
+    fc_df = st.session_state["fc_df"]
 
     district_scope = (
         df[["District_Name", "Display_Name"]]
@@ -2497,7 +2361,7 @@ def main():
     )
     if not use_all_districts:
         st.caption(f"Current district filter: {', '.join(active_display_districts)}")
-    st.info("Streamlit displays the early-warning anomaly scale: Low, Moderate, High, Extreme.")
+    st.info("Streamlit displays the direct district operational-alert scale: Monitor, Alert, Respond.")
 
     tab_explore, tab_drivers, tab_forecast, tab_eval = st.tabs([
         "Exploratory Analysis",
@@ -2519,8 +2383,8 @@ def main():
 
             with mtab:
                 k1, k2, k3 = st.columns(3)
-                k1.metric("Numerator", "Global Acute Malnutrition")
-                k2.metric("Anomaly Levels", "4 levels")
+                k1.metric("Outcome", "GAM detection rate")
+                k2.metric("Operational Alert", "3 levels")
                 k3.metric("Expected months", dq_summary["expected_months"])
                 st.caption("Early-warning labels are anomaly-based and use district-relative percentile thresholds.")
 
@@ -2528,26 +2392,22 @@ def main():
                 with left:
                     st.markdown("**Anomaly Scale**")
                     st.dataframe(
-                        colour_risk_df(build_alert_actions_df().style, ["Anomaly Level"]),
+                        colour_risk_df(build_alert_actions_df(*risk_thresholds).style, ["Operational Alert"]),
                         use_container_width=True,
                         hide_index=True,
                     )
                 with right:
                     st.markdown("**How the Tool Works**")
                     st.dataframe(method_df, use_container_width=True, hide_index=True)
-                st.markdown("**Operational Alert Rules**")
-                st.dataframe(
-                    colour_risk_df(build_operational_alert_rules_df().style, ["Operational Alert"]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                st.caption("Suggested actions guide review and escalation; they are not an IPC classification or an automated response order.")
 
             with dtab:
-                q1, q2, q3, q4 = st.columns(4)
+                q1, q2, q3, q4, q5 = st.columns(5)
                 q1.metric("Median completeness", f"{dq_summary['median_completeness']:.1f}%")
                 q2.metric("Zero GAM months", f"{dq_summary['zero_gam_months']:,}")
                 q3.metric("Outlier GAM months", f"{dq_summary['outlier_gam_months']:,}")
                 q4.metric("Duplicate district-months", f"{dq_summary['duplicate_rows']:,}")
+                q5.metric("Imprecise GAM-rate rows", f"{dq_summary['imprecise_target_rows']:,}")
                 st.dataframe(rename_for_display(dq_district), use_container_width=True, hide_index=True, height=360)
 
             with mtab2:
@@ -2566,57 +2426,49 @@ def main():
                 st.caption("Observed GAM rows remain the gold-standard evaluation set. Proxy-filled rows can contribute to training with reduced weights.")
                 st.dataframe(rename_for_display(proxy_table), use_container_width=True, hide_index=True, height=240)
 
-        latest = view_df.sort_values("Date").groupby("District_Name").last().reset_index()
-        observed_latest = latest.copy()
-        if "Acut_Malnutrition_Observed" in view_df.columns:
-            observed_rows = view_df[pd.to_numeric(view_df["Acut_Malnutrition_Observed"], errors="coerce").notna()].copy()
-            if not observed_rows.empty:
-                observed_latest = observed_rows.sort_values("Date").groupby("District_Name").last().reset_index()
+        situation_dates = sorted(view_df["Date"].dropna().unique(), reverse=True)
         with st.expander("Current Situation", expanded=True):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown("**Within-District Anomaly**")
-                wd_table = build_phase_count_table(latest["wd_risk"], RISK_LEVELS, "Level")
-                render_phase_pie_chart(wd_table, "Level")
-            with c2:
-                st.markdown("**Between-Districts Anomaly**")
-                xd_table = build_phase_count_table(latest["xd_risk"], RISK_LEVELS, "Level")
-                render_phase_pie_chart(xd_table, "Level")
-            with c3:
-                st.markdown("**Operational Alert**")
-                op_table = build_phase_count_table(latest["Operational_Alert"], OPERATIONAL_ALERT_LEVELS, "Level")
-                render_phase_pie_chart(op_table, "Level")
-
-        with st.expander("Top Districts by Current Operational Alert", expanded=True):
-            alert_cols = [
-                "District_Name",
-                "wd_risk",
-                "xd_risk",
-                "Operational_Alert",
-                "Operational_Alert_Why",
-            ]
-            alert_latest = latest[alert_cols].copy()
-            alert_latest["_alert_rank"] = alert_latest["Operational_Alert"].map(OPERATIONAL_ALERT_ORDER).fillna(-1)
-            alert_latest = (
-                alert_latest
-                .sort_values(["_alert_rank", "District_Name"], ascending=[False, True])
-                .drop(columns=["_alert_rank"])
+            situation_date = st.selectbox(
+                "Current situation month",
+                situation_dates,
+                format_func=lambda value: pd.Timestamp(value).strftime("%B %Y"),
+                key="current_situation_month",
+                help="Uses one common month for every district instead of mixing each district's latest available record.",
             )
-            alert_latest = rename_for_display(alert_latest)
+            situation_df = view_df[view_df["Date"] == situation_date].copy()
+            observed_situation = situation_df[
+                pd.to_numeric(situation_df["Acut_Malnutrition_Observed"], errors="coerce").notna()
+            ].copy()
+            observed_map = add_observed_map_status(situation_df, view_df, situation_date)
+            st.caption(
+                f"{pd.Timestamp(situation_date).strftime('%B %Y')}: "
+                f"{len(observed_situation)} districts have valid observed GAM detection rates."
+            )
+            st.markdown("**Operational Alert (District Anomaly)**")
+            wd_table = build_phase_count_table(situation_df["wd_risk"], RISK_LEVELS, "Level")
+            render_phase_pie_chart(wd_table, "Level")
+
+        with st.expander("Districts by Current Operational Alert", expanded=True):
+            anomaly_latest = situation_df[["District_Name", "wd_risk"]].copy()
+            anomaly_latest["_risk_rank"] = anomaly_latest["wd_risk"].map(RISK_ORDER).fillna(-1)
+            anomaly_latest = (
+                anomaly_latest
+                .sort_values(["_risk_rank", "District_Name"], ascending=[False, True])
+                .drop(columns=["_risk_rank"])
+            )
+            anomaly_latest = rename_for_display(anomaly_latest)
             st.dataframe(
                 colour_risk_df(
-                    alert_latest.head(15).style,
-                    ["Within-District Anomaly", "Between-Districts Anomaly", "Operational Alert"],
+                    anomaly_latest.head(15).style,
+                    ["Operational Alert (District Anomaly)"],
                 ),
                 use_container_width=True,
                 hide_index=True,
             )
 
-        with st.expander("Observed Anomalies & Operational Alert", expanded=True):
+        with st.expander("Observed District Operational Alert", expanded=True):
             if not geo_source or geo_name_col is None:
                 st.info("Provide your district GeoJSON in the sidebar to show observed maps.")
-            elif observed_latest.empty:
-                st.info("No observed GAM rows are available for the observed anomaly maps.")
             else:
                 try:
                     if hasattr(geo_source, "seek"):
@@ -2628,38 +2480,21 @@ def main():
                     if matched == 0:
                         st.error("No matching district names. Select the correct GeoJSON district name column.")
                     else:
-                        if observed_latest["Date"].nunique() == 1:
-                            latest_period = observed_latest["Date"].max().strftime("%B %Y")
-                        else:
-                            latest_period = "Latest Observed Month by District"
-                        m1, m2, m3 = st.columns(3)
-                        with m1:
-                            render_map(
-                                gdf,
-                                observed_latest[["District_Name", "wd_risk", "Acut_Malnutrition_Observed"]],
-                                "wd_risk",
-                                f"Within-District Anomaly - {latest_period}",
-                                ["Acut_Malnutrition_Observed"],
-                            )
-                        with m2:
-                            render_map(
-                                gdf,
-                                observed_latest[["District_Name", "xd_risk", "Acut_Malnutrition_Observed"]],
-                                "xd_risk",
-                                f"Between-Districts Anomaly - {latest_period}",
-                                ["Acut_Malnutrition_Observed"],
-                            )
-                        with m3:
-                            if "Operational_Alert" in observed_latest.columns:
-                                render_map(
-                                    gdf,
-                                    observed_latest[[c for c in ["District_Name", "Operational_Alert", "Operational_Alert_Why", "Acut_Malnutrition_Observed"] if c in observed_latest.columns]],
-                                    "Operational_Alert",
-                                    f"Operational Alert - {latest_period}",
-                                    [c for c in ["Acut_Malnutrition_Observed", "Operational_Alert_Why"] if c in observed_latest.columns],
-                                )
-                            else:
-                                st.info("Operational Alert is not available for the current observed dataset.")
+                        latest_period = pd.Timestamp(situation_date).strftime("%B %Y")
+                        status_counts = observed_map["Observed_Map_Status"].value_counts()
+                        st.caption(
+                            f"{status_counts.get('GAM Not Reported', 0)} GAM not reported | "
+                            f"{status_counts.get('Unreliable GAM Rate', 0)} unreliable rate | "
+                            f"{status_counts.get('Insufficient Alert History', 0)} insufficient alert history"
+                        )
+                        render_map(
+                            gdf,
+                            observed_map[["District_Name", "Observed_Map_Status", "Acut_Malnutrition_Observed", "target_exclusion_reason", "Prior_Valid_GAM_Months"]],
+                            "Observed_Map_Status",
+                            f"Operational Alert (District Anomaly) - {latest_period}",
+                            ["Acut_Malnutrition_Observed", "target_exclusion_reason", "Prior_Valid_GAM_Months"],
+                            levels=OBSERVED_MAP_LEVELS,
+                        )
                 except Exception as e:
                     st.error(f"Observed map error: {e}")
                     st.exception(e)
@@ -2667,8 +2502,9 @@ def main():
         with st.expander("Raw Classified Data", expanded=False):
             show_cols = [
                 "Region_District", "District_Name", "Region_Label", "time_period", "Date",
-                "Acut_Malnutrition", "Acut_Malnutrition_Observed", "target_source", "target_proxy_confidence", "wd_risk", "xd_risk",
-                "Caseload_per_100000_Pop", "Operational_Alert", "Operational_Alert_Why",
+                "Acut_Malnutrition", "Acut_Malnutrition_Observed", "GAM_Cases_Observed", "children_assessed_observed",
+                "gam_detection_ci_lower", "gam_detection_ci_upper", "gam_detection_ci_width", "target_precision_qc",
+                "target_exclusion_reason", "target_source", "target_proxy_confidence", "wd_risk",
             ] + [c for c in FEATURE_COLS_NEW if c in df.columns]
             show_cols = [c for c in show_cols if c in df.columns]
             st.dataframe(rename_for_display(view_df[show_cols]), use_container_width=True, height=420, hide_index=True)
@@ -2681,7 +2517,7 @@ def main():
         else:
             with st.expander("3-Month District Forecast", expanded=True):
                 st.success(", ".join(view_fc_df["Month_Year"].unique().tolist()))
-                st.caption("Forecast maps and tables use the early-warning anomaly scale and Operational Alert.")
+                st.caption("Forecast maps and tables use the within-district early-warning anomaly scale.")
                 resid_source = scoped_reg_eval.get("residuals", pd.DataFrame()).copy() if "error" not in scoped_reg_eval else pd.DataFrame()
 
                 hindcast_plot = pd.DataFrame()
@@ -2736,7 +2572,7 @@ def main():
                         .reset_index()
                     )
                     chart_title = scope_label
-                    yaxis_title = "Total GAM caseload"
+                    yaxis_title = "GAM detection rate per 1,000 assessed children"
                     forecast_marker = None
                 else:
                     hist_window = max(18, hindcast_months + 6) if hindcast_months > 0 else 18
@@ -2749,12 +2585,12 @@ def main():
                     hist_label = "Historical"
                     fc_plot = (
                         view_fc_df[view_fc_df["District"] == selected_forecast_district]
-                        .sort_values("Date")[["Date", "Predicted", "Lower_80", "Upper_80", "Operational_Alert", "WD_Risk"]]
+                        .sort_values("Date")[["Date", "Predicted", "Lower_80", "Upper_80", "WD_Risk"]]
                         .reset_index(drop=True)
                     )
                     chart_title = selected_forecast_display
                     yaxis_title = "Cases"
-                    forecast_color_col = "Operational_Alert" if "Operational_Alert" in fc_plot.columns else "WD_Risk" if "WD_Risk" in fc_plot.columns else None
+                    forecast_color_col = "WD_Risk" if "WD_Risk" in fc_plot.columns else None
                     forecast_marker = dict(
                         symbol="diamond",
                         size=11,
@@ -2802,11 +2638,11 @@ def main():
             with st.expander("District Forecast Table", expanded=True):
                 display = view_fc_df.copy()
                 display["Date"] = display["Date"].dt.strftime("%Y-%m-%d")
-                st.caption("Operational Alert uses the within-district and between-district anomaly combination rule.")
-                risk_cols = [c for c in ["WD_Risk", "XD_Risk", "Operational_Alert"] if c in display.columns]
+                st.caption("Operational Alert uses the selected percentile profile and each district's own prior history.")
+                risk_cols = [c for c in ["WD_Risk"] if c in display.columns]
                 display_cols = [
                     "District", "Date", "Predicted", "Lower_80", "Upper_80",
-                    "WD_Risk", "XD_Risk", "Operational_Alert", "Operational_Alert_Why",
+                    "WD_Risk", "Model_Source",
                 ]
                 display_cols = [c for c in display_cols if c in display.columns]
                 display_view = rename_for_display(display[display_cols])
@@ -2820,7 +2656,7 @@ def main():
                     download_name = "acute_malnutrition_forecast_selected_districts.csv"
                 st.download_button("Download forecast CSV", display.to_csv(index=False), download_name)
 
-            with st.expander("Forecast Anomaly & Operational Alert Maps", expanded=True):
+            with st.expander("Forecast District Operational Alert Maps", expanded=True):
                 if not use_all_districts:
                     st.caption(f"Showing forecast maps for: {', '.join(active_display_districts)}.")
                 if not geo_source or geo_name_col is None:
@@ -2840,32 +2676,29 @@ def main():
                             if fc_map.empty:
                                 st.info("No forecast map data available for the selected district.")
                             else:
-                                months = (
-                                    fc_map.sort_values("Date")["Month_Year"]
-                                    .drop_duplicates()
-                                    .tolist()[:3]
+                                forecast_districts = fc_map["District_Name"].nunique()
+                                st.caption(
+                                    f"Forecasts are available for {forecast_districts} of {matched} mapped districts. "
+                                    "Grey districts have insufficient valid observed GAM-detection-rate history and are shown as No Data."
                                 )
-                                map_cols = [
-                                    ("WD_Risk", "Within-District Anomaly"),
-                                    ("XD_Risk", "Between-Districts Anomaly"),
-                                    ("Operational_Alert", "Operational Alert"),
-                                ]
+                                horizons = fc_map[["Step", "Month_Year"]].drop_duplicates().sort_values("Step")
+                                map_cols = [("WD_Risk", "Operational Alert (District Anomaly)")]
                                 available_cols = [(risk_col, col_label) for risk_col, col_label in map_cols if risk_col in fc_map.columns]
                                 if not available_cols:
-                                    st.info("No forecast anomaly or operational alert columns available for mapping.")
+                                    st.info("No forecast anomaly column available for mapping.")
                                 else:
-                                    for i, month in enumerate(months, start=1):
-                                        st.markdown(f"**Horizon {i}: {month}**")
+                                    for _, forecast_period in horizons.iterrows():
+                                        horizon = int(forecast_period["Step"])
+                                        month = forecast_period["Month_Year"]
+                                        st.markdown(f"**Horizon {horizon}: {month}**")
                                         row_cols = st.columns(len(available_cols))
                                         md = fc_map[fc_map["Month_Year"] == month]
                                         for col, (risk_col, col_label) in zip(row_cols, available_cols):
                                             hover_cols = ["Predicted", "Lower_80", "Upper_80"]
-                                            if risk_col == "Operational_Alert":
-                                                hover_cols = [c for c in ["Predicted", "Lower_80", "Upper_80", "Operational_Alert_Why"] if c in md.columns]
                                             with col:
                                                 render_map(
                                                     gdf,
-                                                    md[[c for c in ["District_Name", risk_col, "Predicted", "Lower_80", "Upper_80", "Severity_Prevalence_Pct", "Predicted_Caseload_per_100000_Pop", "Operational_Alert_Why"] if c in md.columns]],
+                                                    md[[c for c in ["District_Name", risk_col, "Predicted", "Lower_80", "Upper_80", "Severity_Prevalence_Pct"] if c in md.columns]],
                                                     risk_col,
                                                     f"{col_label} - {month}",
                                                     hover_cols,
@@ -2876,7 +2709,7 @@ def main():
 
     with tab_drivers:
         with st.expander("Spearman Correlation Portrait", expanded=True):
-            st.caption("Rank-based correlation between GAM caseload (SAM + MAM) and covariates. Blue means positive association; red means negative association.")
+            st.caption("Rank-based correlation between GAM detection rate per 1,000 assessed children and covariates. Blue means positive association; red means negative association.")
             corr_slice = view_df
             if len(active_districts) == 1:
                 st.caption(f"{len(corr_slice)} monthly records for {active_display_districts[0]}.")
@@ -2899,7 +2732,7 @@ def main():
 
         with st.expander("Historical Trend", expanded=True):
             nat = view_df.groupby("Date")["Acut_Malnutrition"].sum().reset_index()
-            fig = px.line(nat, x="Date", y="Acut_Malnutrition", markers=True, title=f"Total GAM Caseload (SAM + MAM) - {scope_label}")
+            fig = px.line(nat, x="Date", y="Acut_Malnutrition", markers=True, title=f"District GAM Detection Rate Sum per 1,000 Assessed Children - {scope_label}")
             fig.update_layout(height=380)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -2910,7 +2743,7 @@ def main():
             else:
                 mean_error = scoped_reg_eval.get("cv_mean_error", np.nan)
                 p90_ae = scoped_reg_eval.get("cv_p90_ae", np.nan)
-                target_transform = scoped_reg_eval.get("target_transform", "raw caseload scaling")
+                target_transform = scoped_reg_eval.get("target_transform", "GAM detection rate scaling")
                 r1, r2, r3, r4, r5 = st.columns(5)
                 r1.metric("MAE", f"{scoped_reg_eval['cv_mae']:.1f}", delta=f"+/- {scoped_reg_eval['cv_mae_std']:.1f}", delta_color="off")
                 r2.metric("RMSE", f"{scoped_reg_eval['cv_rmse']:.1f}")
@@ -2935,9 +2768,9 @@ def main():
                             resid,
                             x="Actual",
                             y="Predicted",
-                            color="XD_Risk",
+                            color="WD_Risk",
                             color_discrete_map=RISK_COLORS,
-                            category_orders={"XD_Risk": RISK_LEVELS},
+                            category_orders={"WD_Risk": RISK_LEVELS},
                             hover_data=["District", "Date", "Absolute_Error"],
                             title=f"Predicted vs Actual - {scope_label}",
                         )
@@ -2951,9 +2784,9 @@ def main():
                             resid,
                             x="Actual",
                             y="Signed_Error",
-                            color="XD_Risk",
+                            color="WD_Risk",
                             color_discrete_map=RISK_COLORS,
-                            category_orders={"XD_Risk": RISK_LEVELS},
+                            category_orders={"WD_Risk": RISK_LEVELS},
                             hover_data=["District", "Date", "Predicted", "Absolute_Error"],
                             title=f"Signed Error vs Actual - {scope_label}",
                         )
@@ -2971,7 +2804,7 @@ def main():
                         st.dataframe(
                             largest_errors[[
                                 "District", "Date", "Actual", "Predicted",
-                                "Signed_Error", "Absolute_Error", "XD_Risk",
+                                "Signed_Error", "Absolute_Error", "WD_Risk",
                             ]].round(2),
                             use_container_width=True,
                             hide_index=True,

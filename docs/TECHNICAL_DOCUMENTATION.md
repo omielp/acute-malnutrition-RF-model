@@ -8,83 +8,77 @@ This application supports early warning and decision support for acute malnutrit
 
 1. Load monthly district data.
 2. Parse dates and standardize region/district labels.
-3. Compute within-district risk using each district's own historical percentiles.
-4. Compute between-district risk using peer district distributions by month.
-5. Harmonize legacy diarrhea inputs where needed.
-6. Sanitize impossible target and covariate values.
-7. Impute missing modeled covariates with district/location-aware rules and create `*_missing` indicators.
-8. Cap extreme modeled covariates with robust district/location-aware thresholds and create `*_outlier` indicators.
-9. Add GAM target QC flags for suspicious spikes and duplicate district-month observations.
-10. Engineer lagged, rolling, seasonal, and district-relative features.
-11. Train Random Forest regression to forecast acute malnutrition case counts.
-12. Train Random Forest classifiers for risk evaluation.
-13. Generate 3-month recursive forecasts.
-14. Convert forecasts into risk categories.
-15. Visualize results through maps, charts, risk tables, and model metrics.
+3. Compute within-district risk using each district's own historical percentiles after 12 valid prior months.
+4. Harmonize legacy diarrhea inputs where needed.
+5. Sanitize impossible target and covariate values.
+6. Impute missing modeled covariates with district/location-aware rules and create `*_missing` indicators.
+7. Cap extreme modeled covariates with robust district/location-aware thresholds and create `*_outlier` indicators.
+8. Add GAM target QC for invalid observations, duplicates, and imprecise detection rates using a 95% Wilson interval width.
+9. Engineer lagged, rolling, seasonal, and district-relative features.
+10. Train Random Forest regression on a log1p GAM detection-rate target; inputs are not full-history standardised, preventing later observations from influencing earlier rows.
+11. Derive within-district risk labels from percentile rules; no Random Forest classifier produces risk labels.
+
+Existing CHAP artifacts created before `chap-rf-v20-lean-direct-horizons` must be retrained. The prediction command rejects incompatible artifacts rather than applying an incompatible feature schema.
+12. Generate separate direct forecasts for horizons 1 and 3; the 3-month model does not use intermediate predictions.
+13. Convert forecasts into within-district risk categories.
+14. Visualize results through maps, charts, risk tables, and model metrics.
 
 ## Risk Definitions
 
-Risk is categorized using percentile thresholds:
+The direct district operational alert is categorized using percentile thresholds:
 
-| Risk | Threshold |
+| Operational Alert | Threshold |
 |---|---|
-| Low | Below 75th percentile |
-| Moderate | 75th to 89th percentile |
-| High | 90th to 94th percentile |
-| Extreme | At or above 95th percentile |
+| Monitor | Below 80th percentile |
+| Alert | 80th to 94th percentile |
+| Respond | At or above 95th percentile |
+
+The Streamlit app offers a sensitivity selector between the default `P90 / P95` profile and `P80 / P90`. It recalculates observed and forecast alert labels, but does not alter the GAM detection-rate target. CHAP uses the standard `P90 / P95` profile for reproducible deployment output.
+
+For Streamlit forecasting, users can select Random Forest, a causal district local-level/trend state-space model, or an MAE-weighted RF/SSM blend. The blend is an operational comparison tool until both methods are evaluated on identical rolling forecast folds; it does not use future observations.
 
 ## Within-District Risk
 
-Within-district risk compares a district against its own previous history. This is useful for identifying unusual increases in a district even if its absolute case count is not nationally high.
+Within-district risk compares a district against its own previous valid GAM-detection-rate history. It is assigned only after 12 valid prior months, preventing unstable labels in early or sparse histories.
 
-## Between-District Risk
+## Suggested Actions
 
-Between-district risk compares each district against other districts. This is useful for identifying districts with high burden relative to peers.
+The within-district anomaly is the direct alert signal. `Monitor` supports routine monitoring; `Alert` prompts investigation and validation; and `Respond` prompts escalation for rapid assessment and response planning. These actions are decision-support prompts, not IPC classifications or automated response orders.
 
 ## Features
 
 The model uses:
 
-- calendar features: month, quarter, sine/cosine seasonality;
-- lag features: previous 1, 2, and 3 months;
-- rolling features: 3-, 6-, and 12-month summaries;
-- trend and acceleration;
-- district historical percentiles;
-- threshold exceedance features;
-- recent risk counts;
-- climate covariates plus under-5 disease, service-delivery, reporting-quality, and population covariates;
-- missingness-indicator features for each modeled covariate;
-- outlier-indicator features for each modeled covariate.
+- sine/cosine seasonal features;
+- GAM lags 1, 2, and 3, a 3-month GAM mean, and a seasonal GAM lag;
+- eight lag-1 operational covariates: temperature, rainfall, GPP, malaria, diarrhoea, children assessed, reporting rate, and under-five population;
+- missingness-indicator features for each selected forecast covariate;
+- outlier-indicator features for each selected forecast covariate.
 
 ### Final Feature Set
 
-The final engineered feature set is shared across the Streamlit app and CHAP, with three app-only anomaly-history features.
+The final engineered feature set is shared across the Streamlit app and CHAP. It is intentionally lean to reduce overfitting in short district time series.
 
 | Feature group | Exact features |
 |---|---|
-| Shared temporal and target-history features | `Month`, `Quarter`, `Month_Sin`, `Month_Cos`, `Lag1`, `Lag2`, `Lag3`, `Lag1_Z`, `Roll3_Mean`, `Roll3_Std`, `Roll6_Mean`, `Seasonal_Lag12`, `Hist_Mean`, `Hist_Std`, `Hist_P90`, `Hist_P95`, `Lag1_Over_P95`, `Lag1_Ratio_P95` |
-| App-only features | `Recent_WD_High_Count`, `WD_Score_Lag`, `XD_Score_Lag` |
+| Temporal and GAM-history features | `Month_Sin`, `Month_Cos`, `Lag1`, `Lag2`, `Lag3`, `Roll3_Mean`, `Seasonal_Lag12` |
 
-| Covariate | Base covariate feature used by both app and CHAP | Missing flag | Outlier flag | Extra lag and rolling features |
-|---|---|---|---|---|
-| `mean_temperature` | `mean_temperature` | `mean_temperature_missing` | `mean_temperature_outlier` | `mean_temperature_Lag2`, `mean_temperature_Lag3`, `mean_temperature_Roll2_Mean`, `mean_temperature_Roll3_Mean` |
-| `rainfall` | `rainfall` | `rainfall_missing` | `rainfall_outlier` | `rainfall_Lag2`, `rainfall_Lag3`, `rainfall_Roll2_Mean`, `rainfall_Roll3_Mean` |
-| `mean_relative_humidity` | `mean_relative_humidity` | `mean_relative_humidity_missing` | `mean_relative_humidity_outlier` | `mean_relative_humidity_Lag2`, `mean_relative_humidity_Lag3`, `mean_relative_humidity_Roll2_Mean`, `mean_relative_humidity_Roll3_Mean` |
-| `average_gpp` | `average_gpp` | `average_gpp_missing` | `average_gpp_outlier` | `average_gpp_Lag2`, `average_gpp_Lag3`, `average_gpp_Roll2_Mean`, `average_gpp_Roll3_Mean` |
-| `malaria_confirmed_u5` | `malaria_confirmed_u5` | `malaria_confirmed_u5_missing` | `malaria_confirmed_u5_outlier` | `malaria_confirmed_u5_Lag2`, `malaria_confirmed_u5_Lag3`, `malaria_confirmed_u5_Roll2_Mean`, `malaria_confirmed_u5_Roll3_Mean` |
-| `pneumonia_cases_u5` | `pneumonia_cases_u5` | `pneumonia_cases_u5_missing` | `pneumonia_cases_u5_outlier` | `pneumonia_cases_u5_Lag2`, `pneumonia_cases_u5_Lag3`, `pneumonia_cases_u5_Roll2_Mean`, `pneumonia_cases_u5_Roll3_Mean` |
-| `diarrhea_u5` | `diarrhea_u5` | `diarrhea_u5_missing` | `diarrhea_u5_outlier` | `diarrhea_u5_Lag2`, `diarrhea_u5_Lag3`, `diarrhea_u5_Roll2_Mean`, `diarrhea_u5_Roll3_Mean` |
-| `low_birth_weight_babies` | `low_birth_weight_babies` | `low_birth_weight_babies_missing` | `low_birth_weight_babies_outlier` | `low_birth_weight_babies_Lag2`, `low_birth_weight_babies_Lag3`, `low_birth_weight_babies_Roll2_Mean`, `low_birth_weight_babies_Roll3_Mean` |
-| `sam_admissions_u5` | `sam_admissions_u5` | `sam_admissions_u5_missing` | `sam_admissions_u5_outlier` | `sam_admissions_u5_Lag2`, `sam_admissions_u5_Lag3`, `sam_admissions_u5_Roll2_Mean`, `sam_admissions_u5_Roll3_Mean` |
-| `screened_u5` | `screened_u5` | `screened_u5_missing` | `screened_u5_outlier` | `screened_u5_Lag2`, `screened_u5_Lag3`, `screened_u5_Roll2_Mean`, `screened_u5_Roll3_Mean` |
-| `reporting_rate` | `reporting_rate` | `reporting_rate_missing` | `reporting_rate_outlier` | `reporting_rate_Lag2`, `reporting_rate_Lag3`, `reporting_rate_Roll2_Mean`, `reporting_rate_Roll3_Mean` |
-| `population_u5` | `population_u5` | `population_u5_missing` | `population_u5_outlier` | none |
+| Covariate | Lag-1 feature used by both app and CHAP | Missing flag | Outlier flag |
+|---|---|---|---|
+| `mean_temperature` | `mean_temperature` | `mean_temperature_missing` | `mean_temperature_outlier` |
+| `rainfall` | `rainfall` | `rainfall_missing` | `rainfall_outlier` |
+| `average_gpp` | `average_gpp` | `average_gpp_missing` | `average_gpp_outlier` |
+| `malaria_confirmed_u5` | `malaria_confirmed_u5` | `malaria_confirmed_u5_missing` | `malaria_confirmed_u5_outlier` |
+| `diarrhea_u5` | `diarrhea_u5` | `diarrhea_u5_missing` | `diarrhea_u5_outlier` |
+| `screened_u5` | `screened_u5` | `screened_u5_missing` | `screened_u5_outlier` |
+| `reporting_rate` | `reporting_rate` | `reporting_rate_missing` | `reporting_rate_outlier` |
+| `population_u5` | `population_u5` | `population_u5_missing` | `population_u5_outlier` |
 
 Notes:
 
 - all base covariate features are used as lag-1 covariates, meaning the model uses the previous month's observed or imputed value;
-- the extra `Lag2`, `Lag3`, `Roll2_Mean`, and `Roll3_Mean` features are applied to all modeled covariates except `population_u5`;
-- all clinical and service-delivery covariates in the feature set are under-5 based, with `low_birth_weight_babies` retained as a neonatal covariate within the same under-5 scope;
+- additional covariates remain available in the raw data and drivers view, but are not forecast features unless the lean schema is deliberately revised after backtesting;
+- all clinical and service-delivery covariates in the feature set are under-5 based;
 - `reporting_rate` is normalized to a `0-1` fraction inside preprocessing even if the source data use `0-100`.
 - `target_outlier_qc` and `target_duplicate_qc` are QC fields and are not part of the model feature set.
 
@@ -114,67 +108,18 @@ This approach protects the model from obvious reporting artifacts without flatte
 
 ## Target Handling
 
-The GAM target is handled conservatively:
+The regression target is the observed GAM detection rate among assessed children, per 1,000 assessed children:
 
-- negative or non-numeric target values are converted to missing and excluded from training;
-- the target is not imputed for training;
-- the target is not winsorized by default, because true spikes may carry operational signal;
-- suspicious target spikes are tracked with `target_outlier_qc`;
-- duplicate district/location-month target observations are tracked with `target_duplicate_qc`.
+`GAM detection rate = GAM cases / screened_u5 * 1,000`
 
-### Target Proxy Status
-
-Target-proxy creation is active in the training pipeline.
-
-Current behavior:
-
-- observed `disease_cases` or `Acut_Malnutrition` remains the preferred target whenever it is available;
-- missing target rows can be filled from proxy logic based on `screened_u5`, `sam_admissions_u5`, and `reporting_rate`;
-- proxy calibration is causal, so each row only uses earlier observed history when estimating GAM-to-screening and GAM-to-SAM ratios;
-- proxy provenance fields are generated, including `target_source`, `target_proxy_confidence`, `target_is_observed`, and `target_training_weight`;
-- CHAP and Streamlit training can include proxy-filled rows, but with lower sample weights than fully observed GAM rows;
-- regression evaluation metrics remain anchored on rows with observed GAM only;
-- Streamlit data-quality summaries and observed anomaly maps use observed GAM only, not proxy-filled GAM.
-
-Implemented proxy workflow:
-
-| Step | Intended rule |
-|---|---|
-| 1. Observed target | If reported GAM caseload is present, use it directly |
-| 2. Reporting adjustment | Adjust `screened_u5` and `sam_admissions_u5` using district `reporting_rate`, with a conservative lower floor on the effective reporting rate |
-| 3. Screening proxy | If GAM is missing and `screened_u5` is available, estimate GAM from `screened_u5 x` historical district-seasonal GAM detection rate learned from earlier observed months |
-| 4. SAM proxy | If GAM is missing and `sam_admissions_u5` is available, estimate GAM from `sam_admissions_u5 x` historical district-seasonal GAM-to-SAM multiplier learned from earlier observed months |
-| 5. Blended proxy | If both screening and SAM proxies are available, combine them with heavier weight on screening |
-| 6. Provenance flags | Store whether the target is `observed`, `proxy_screened`, `proxy_sam_admissions`, or `proxy_combined`, plus a proxy-confidence label and training weight |
-
-Training-weight rules:
-
-| Target source | Base training weight | Notes |
-|---|---|---|
-| `observed` | `1.00` | full weight |
-| `proxy_combined` | `0.60` | strongest proxy source |
-| `proxy_screened` | `0.50` | screening-only proxy |
-| `proxy_sam_admissions` | `0.35` | weakest direct proxy in the current implementation |
-
-For proxy-filled rows, the base weight is further reduced when `reporting_rate` is low:
-
-- `reporting_rate >= 0.8`: weight factor `1.00`
-- `0.6 <= reporting_rate < 0.8`: weight factor `0.85`
-- `reporting_rate < 0.6`: weight factor `0.70`
-
-Recommended implementation guardrails:
-
-- keep proxy-filled target rows out of the gold-standard evaluation set;
-- compare model performance with and without proxy-filled training rows;
-- treat `screened_u5` as the primary proxy for total GAM and `sam_admissions_u5` as a secondary severity proxy;
-- cap or downweight reporting-rate adjustments when `reporting_rate` is very low.
+Rows are retained for all districts. A district-month is excluded from training and evaluation when GAM is missing or invalid, children assessed is missing or not positive, GAM exceeds children assessed, the district-month is duplicated, or its 95% Wilson interval is wider than 100 per 1,000. The interval is calculated from GAM cases and children assessed only, not from population or any future information. GAM is never imputed or proxy-filled. GAM target outliers remain QC flags because a genuine spike may carry operational signal.
 
 ## Models
 
 ### Regression
 
-Random Forest Regressor predicts acute malnutrition case counts for the next 3 months.
-Forecast risk labels and operational alerts are derived from the regression forecast in the active forecasting path.
+Separate Random Forest regressors predict GAM detection rate per 1,000 assessed children directly at horizons 1 and 3 months.
+Forecast risk labels are derived from the regression forecast in the active forecasting path.
 
 ## CHAP Output Modes
 
@@ -183,39 +128,18 @@ The CHAP interface supports two output modes:
 | Mode | How to enable | Output columns | Intended use |
 |---|---|---|---|
 | Default CHAP mode | default behavior | `time_period`, `location`, `sample_0` to `sample_99` | safest path for CHAP and DHIS2 ingestion |
-| Enriched CHAP mode | `CHAP_INCLUDE_RISK_OUTPUT=1` with `predict.py`, or `python chap_model.py predict ... --include-risk-output` | default CHAP columns plus `point_forecast`, `wd_risk`, `wd_risk_code`, `xd_risk`, `xd_risk_code`, `Operational_Alert`, `Operational_Alert_Code`, `Operational_Alert_Why`, `Composite_Risk`, `Composite_Risk_Code` | testing or downstream flows that can tolerate extra columns |
+| Enriched CHAP mode | `CHAP_INCLUDE_RISK_OUTPUT=1` with `predict.py`, or `python chap_model.py predict ... --include-risk-output` | default CHAP columns plus `point_forecast`, `operational_alert`, `operational_alert_code` | testing or downstream flows that can tolerate extra columns |
+
+When a district has fewer than three valid observed GAM-detection-rate months, its requested future rows are retained with blank samples and `No Data` enriched fields. The model does not create a synthetic GAM history for that district. Enriched within-district anomaly output also requires 12 valid observed months.
+
+The direct models support future months `+1` and `+3` from each district's latest valid GAM observation. A supplied `+2` row is retained with blank samples and `No Data` enriched fields so CHAP receives an honest, non-recursive output rather than an imputed intermediate forecast.
 
 In enriched CHAP mode, the added outputs are derived from the regression forecast rather than emitted by a standalone classifier:
 
 - `point_forecast` is the mean of the `sample_*` forecast draws;
-- `wd_risk` is derived from each location's own historical forecast context;
-- `xd_risk` is derived by comparing forecasted locations within the same forecast month;
-- `Operational_Alert` and `Operational_Alert_Why` use the same rule logic as the Streamlit app.
+- `operational_alert` is derived from each location's own historical forecast context;
 - code fields are included for downstream systems that prefer numeric imports:
-  - `Operational_Alert_Code`: `0 = No Data`, `1 = Monitor`, `2 = Alert`, `3 = Respond`
-  - `wd_risk_code` and `xd_risk_code`: `0 = No Data`, `1 = Low`, `2 = Moderate`, `3 = High`, `4 = Extreme`
-
-### No-fork Operational Alert workaround
-
-If the Modeling App cannot be forked yet, the existing `Outbreak indicator` channel can be repurposed by enabling:
-
-- CLI: `python chap_model.py predict ... --outbreak-indicator-mode operational_alert_code`
-- env var: `CHAP_OUTBREAK_INDICATOR_MODE=operational_alert_code`
-
-When this mode is enabled, CHAP appends:
-
-- `outbreak_indicator`
-- `outbreak_indicator_label`
-
-Workaround semantics:
-
-- `outbreak_indicator = Operational_Alert_Code`
-- `0 = No Data`
-- `1 = Monitor`
-- `2 = Alert`
-- `3 = Respond`
-
-This is intentionally a workaround rather than a native platform feature. It repurposes the outbreak-indicator channel from a binary outbreak signal into a 4-state operational-alert code, so downstream interpretation must treat it as `Operational Alert`.
+  - `operational_alert_code`: `0 = No Data`, `1 = Monitor`, `2 = Alert`, `3 = Respond`
 
 ### Current simple production contract
 
@@ -233,25 +157,8 @@ The smallest CHAP-compatible production setup keeps the existing Modeling App ma
 Under this simpler first version:
 
 - the model should be run in Default CHAP mode for production imports;
-- `wd_risk`, `xd_risk`, `Operational_Alert`, `Operational_Alert_Why`, and `Composite_Risk` remain optional extra outputs for QA, exports, or future forked Modeling App work;
+- `operational_alert` and `operational_alert_code` remain optional extra outputs for QA, exports, or a future Modeling App extension;
 - exposing those extra fields as dedicated import targets will require a Modeling App and likely CHAP-core extension, because the current platform import contract is centered on quantiles plus one outbreak-indicator channel.
-
-### Smallest Modeling App fork for Operational Alert
-
-This repository does not contain the Modeling App source code, so the DHIS2 setup modal and import workflow must be changed in that separate app. The smallest fork is:
-
-| Layer | Smallest change |
-|---|---|
-| Prediction setup modal | add one new mapping field: `Operational Alert` |
-| Saved prediction setup schema | persist the chosen DHIS2 data element for `Operational_Alert_Code` |
-| Import payload builder | include `Operational_Alert_Code` from enriched CHAP output when sending data values to DHIS2 |
-| DHIS2 metadata | create one numeric data element for the alert code |
-
-Recommended first implementation:
-
-- map `Operational_Alert_Code`, not free text;
-- keep quantile mappings and outbreak-indicator mappings unchanged;
-- enable enriched CHAP output only for the forked Modeling App path that can consume the extra field.
 
 ## Evaluation
 
@@ -277,11 +184,9 @@ Spearman rank correlation is used to assess monotonic associations between acute
 The app accepts a district GeoJSON file and maps:
 
 - current within-district risk;
-- current between-district risk;
 - forecast within-district risk;
-- forecast between-district risk;
 - composite risk;
-- 3-month risk change.
+- direct 1-month and 3-month operational-alert maps.
 
 ## Limitations
 

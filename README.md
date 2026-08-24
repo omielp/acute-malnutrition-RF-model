@@ -2,35 +2,32 @@
 
 AMFT is a Streamlit-based decision-support tool for district-level acute malnutrition monitoring in Uganda. It combines anomaly detection, short-term forecasting, geospatial visualization, data quality checks, and model evaluation to support early warning and operational planning.
 
-The current version focuses on three connected outputs:
+The current version focuses on two connected outputs:
 
-- 4-level anomaly classification for within-district and between-district monitoring
-- 3-level operational alerts derived from anomaly combinations
-- 3-month district forecasts of GAM caseloads with uncertainty bounds
+- 3-level operational alert classification from each district's own history
+- separate direct 1-month and 3-month district forecasts of GAM detection rates per 1,000 assessed children with uncertainty bounds
 
 ## What Changed in the Current Tool
 
 The README has been updated to reflect the current app behavior. The tool now uses:
 
-- anomaly levels of `Low`, `Moderate`, `High`, and `Extreme`
-- operational alerts of `Monitor`, `Alert`, and `Respond`
-- 3-month recursive forecasting with `Lower_80` and `Upper_80` intervals
+- operational alert levels of `Monitor`, `Alert`, and `Respond`
+- direct 1-month and 3-month forecasting with `Lower_80` and `Upper_80` intervals
 - district filtering across the full app
-- observed and forecast map views for anomalies and operational alerts
+- observed and forecast map views for within-district anomalies
 - built-in data quality summaries for districts and months
 - regression model checks inside the app
 - optional IPC AMN severity labeling when direct GAM prevalence columns are available
 
 ## Core Capabilities
 
-- Load district monthly GAM caseload data from a local path or file upload
+- Load district monthly reported GAM cases and children-assessed data from a local path or file upload
 - Load district boundaries from a local GeoJSON path or file upload
-- Classify observed GAM caseloads using district-relative and peer-relative anomaly rules
-- Generate operational alerts from within-district and between-district anomaly combinations
-- Forecast district GAM caseloads for the next 3 months
+- Classify observed GAM detection rates using district-relative anomaly rules
+- Forecast district GAM detection rates directly for months 1 and 3
 - Display forecast uncertainty with 80% intervals
 - Compare districts or regions against a national reference trend
-- Explore Spearman correlations between GAM caseload and covariates
+- Explore Spearman correlations between GAM detection rate and covariates
 - Review regression and classification model performance
 - Download classified observed data and forecast outputs
 
@@ -40,22 +37,26 @@ The README has been updated to reflect the current app behavior. The tool now us
 
 Observed and forecast anomaly labels use percentile thresholds:
 
-| Level | Threshold | Meaning |
+| Operational Alert | Threshold | Meaning |
 |---|---|---|
-| `Low` | Below 75th percentile | Within the usual range |
-| `Moderate` | 75th to below 90th percentile | Higher than usual |
-| `High` | 90th to below 95th percentile | Unusually high |
-| `Extreme` | 95th percentile and above | Exceptionally high |
+| `Monitor` | Below 90th percentile | Within the usual range |
+| `Alert` | 90th to below 95th percentile | Higher than usual; investigate and validate |
+| `Respond` | 95th percentile and above | Exceptionally high; escalate for rapid assessment and response planning |
 
-### 2. Operational Alert
+Within-district labels are assigned only after a district has at least 12 valid prior GAM-detection-rate months. Before that, the within-district label is `No Data` rather than an unstable anomaly classification.
 
-Operational alerts are derived from the combination of within-district and between-district anomaly levels:
+The Streamlit sidebar provides two alert-threshold profiles and three forecast-model choices for operational review:
 
-| Operational Alert | Rule | Typical Action |
-|---|---|---|
-| `Monitor` | Within = `Low` and Between = `Low` or `Moderate` | Routine monitoring |
-| `Alert` | Within = `Low` and Between = `High` or `Extreme`, or Within = `Moderate` and Between = `Low` or `Moderate` | Heightened surveillance |
-| `Respond` | Within = `High` or `Extreme`, or Within = `Moderate` and Between = `High` or `Extreme` | Immediate response |
+- `Standard: P90 / P95` is the default, with `Respond` reserved for the highest 5% of a district's reference distribution.
+- `Sensitive: P80 / P90` increases sensitivity for operational review.
+
+Changing the profile recalculates observed and forecast operational-alert labels. It does not change the GAM detection-rate target or the deployed CHAP default profile.
+
+The Streamlit forecast selector offers `Random Forest`, a causal district state-space model, and an MAE-weighted RF/SSM blend. The blend is for operational comparison while matched backtesting is completed. CHAP remains Random Forest-only.
+
+### 2. Suggested Actions
+
+The operational alert is the district anomaly label itself: no second composite rule is applied. These are decision-support prompts, not IPC classifications or automated response orders.
 
 ### 3. IPC AMN Severity
 
@@ -67,7 +68,7 @@ If the dataset includes direct GAM prevalence columns such as WHZ- or MUAC-based
 - `Critical`
 - `Extremely Critical`
 
-If prevalence data are not present, the app still supports anomaly-based early warning and GAM caseload forecasting.
+If prevalence data are not present, the app still supports anomaly-based early warning and GAM-detection-rate forecasting.
 
 ## How the App Works
 
@@ -75,15 +76,16 @@ The application follows this workflow:
 
 1. Load monthly district GAM data.
 2. Parse dates and standardize district labels.
-3. Calculate within-district anomalies from each district's own historical distribution.
-4. Calculate between-district anomalies from peer district and seasonal patterns.
-5. Harmonize diarrhea inputs, sanitize impossible values, cap extreme modeled covariates, and create missingness and outlier indicator features.
-6. Apply target QC flags for suspicious GAM spikes or duplicate district-month rows.
-7. Engineer lagged, rolling, trend, seasonal, and district-relative features.
-8. Train Random Forest models for regression and anomaly classification.
-9. Generate 3-month recursive district forecasts.
-10. Convert forecast outputs into anomaly labels and operational alerts.
-11. Visualize current conditions, historical patterns, drivers, forecasts, and model checks.
+3. Calculate within-district anomalies from each district's own historical distribution after 12 valid prior months.
+4. Harmonize diarrhea inputs, sanitize impossible values, cap extreme modeled covariates, and create missingness and outlier indicator features.
+5. Apply observed-only target QC: invalid GAM, duplicate district-months, and imprecise GAM detection rates with a 95% Wilson interval wider than 100 per 1,000 are retained as `No Data` and excluded from training/evaluation.
+6. Engineer a lean, causal feature set: GAM lags, a rolling GAM mean, seasonal terms, and lag-1 operational covariates with data-quality flags.
+7. Train a Random Forest regressor for GAM detection rates; anomaly labels are derived from regression outputs and percentile rules, not a classifier.
+
+The model uses raw causal lag features and a `log1p` GAM detection-rate target. It does not standardise a row using the district's future observations. Retrain any existing CHAP model artifact after upgrading to this version.
+8. Train and generate separate direct district forecasts for horizons 1 and 3; the 3-month forecast does not use month-1 or month-2 predictions.
+9. Convert forecast outputs into direct district operational-alert labels.
+10. Visualize current conditions, historical patterns, drivers, forecasts, and model checks.
 
 ## App Sections
 
@@ -94,8 +96,8 @@ The Streamlit app is organized into four main tabs:
 - Run summary
 - Data quality and methodology
 - Current situation summaries
-- Top districts by current operational alert
-- Observed anomaly and operational alert maps
+- Districts ranked by current anomaly
+- Observed anomaly map
 - Raw classified data table
 
 ### Drivers & Context
@@ -110,7 +112,7 @@ The Streamlit app is organized into four main tabs:
 - 3-month district forecast chart
 - Hindcast view for prior out-of-sample predictions
 - Forecast table with uncertainty bounds
-- Forecast anomaly and operational alert maps
+- Forecast anomaly maps
 
 ### Model Checks
 
@@ -119,7 +121,7 @@ The Streamlit app is organized into four main tabs:
 - Residual analysis
 - Largest forecast error review
 - Feature importance charts
-- Classification metrics for within-district and between-district anomaly models
+- Classification context for within-district anomaly levels
 
 ## System Architecture
 
@@ -154,7 +156,9 @@ The CHAP-facing scripts accept the standard CHAP column names:
 
 - `time_period`
 - `location`
-- `disease_cases` for `train_data` and `historic_data`
+- `disease_cases` (reported GAM cases) and `screened_u5` (children assessed) for `train_data` and `historic_data`
+
+The regression target is the observed GAM detection rate among assessed children: `disease_cases / screened_u5 * 1,000`.
 
 Modeled covariates supported by the model:
 
@@ -203,29 +207,12 @@ Modeled covariates and GAM targets are handled differently:
 
 - impossible covariate values are converted to missing before preprocessing, for example negative child-health counts, non-positive `population_u5`, negative `rainfall`, negative `average_gpp`, humidity outside `0-100`, or reporting rates outside `0-100`
 - extreme modeled covariates are capped within district/location using a robust median plus/minus `5 * MAD` rule calculated from earlier observations only, and each modeled covariate also gets a companion `*_outlier` indicator
-- GAM targets are not winsorized by default, because true spikes may be the signal of interest
-- impossible GAM target values such as negative caseloads are converted to missing and excluded from training
-- GAM target QC is tracked with `target_outlier_qc` and `target_duplicate_qc` flags so suspicious spikes or duplicate district-month observations can be reviewed without flattening the target series
+- GAM detection rates are calculated only when GAM is non-negative, children assessed is positive, GAM does not exceed children assessed, and the district-month is not duplicated
+- a 95% Wilson confidence interval is calculated from GAM cases and children assessed only; rates with an interval wider than 100 per 1,000 are retained as QC records but excluded from training, evaluation, and anomaly thresholds
+- invalid or missing GAM target rows remain in the dataset but are excluded from training and evaluation; GAM is never proxy-filled or imputed
+- GAM target outlier flags remain QC signals and do not automatically exclude a true spike
 
-### Target proxy status
-
-Proxy target creation is now active in the training pipeline for rows where GAM is missing.
-
-- observed GAM remains the preferred target whenever it is available
-- if GAM is missing, the pipeline can build:
-  - `gam_proxy_screened` from `screened_u5`
-  - `gam_proxy_sam_admissions` from `sam_admissions_u5`
-  - `gam_proxy_combined` as the default blended proxy target
-- proxy calibration is causal: each month only uses earlier observed history, never future months or same-month peers
-- `reporting_rate` is used to adjust `screened_u5` and `sam_admissions_u5` before proxy calculation, with a conservative floor to avoid extreme inflation
-- provenance fields are generated:
-  - `target_source`
-  - `target_proxy_confidence`
-  - `target_is_observed`
-  - `target_training_weight`
-- proxy-filled rows can be used for model training, but with lower training weights than observed GAM rows
-- regression evaluation remains anchored on rows with observed GAM only
-- data-quality summaries and "Observed Anomalies & Operational Alert" maps now use observed GAM rows only
+Within-district anomaly labels require at least 12 valid prior GAM-detection-rate months. `Low` and `Moderate` map to `Monitor`, `High` maps to `Alert`, and `Extreme` maps to `Respond`.
 
 ### Output schema
 
@@ -236,6 +223,9 @@ The `predict` entrypoint writes a CHAP-compatible CSV with:
 - `sample_0` through `sample_99`
 
 Each `sample_*` column is one forecast draw derived from the fitted random forest, which allows CHAP to calculate uncertainty intervals.
+District-months with fewer than three valid observed GAM-detection-rate months are retained with blank sample values (`No Data`) rather than receiving a forecast based on imputed GAM history.
+
+The CHAP model uses separate direct models for the future months exactly one and three months after each district's latest valid GAM observation. If CHAP supplies the intermediate `+2` month to maintain a contiguous three-month request, that row is retained with blank samples rather than receiving a recursive forecast.
 
 ### Current CHAP and Modeling App setup
 
@@ -248,9 +238,9 @@ For the simpler first version, use the default CHAP output mode in production:
 | `Median` | derived by CHAP from `sample_*` | standard CHAP import path |
 | `Quantile mid low` | derived by CHAP from `sample_*` | standard CHAP import path |
 | `Quantile low` | derived by CHAP from `sample_*` | standard CHAP import path |
-| `Outbreak indicator` | derived by CHAP from imported quantiles plus alert probability | this is the current alert channel in CHAP, not a direct import of `Operational_Alert` |
+| `Outbreak indicator` | derived by CHAP from imported quantiles plus alert probability | platform-managed binary CHAP alert channel |
 
-This means the current CHAP / DHIS2 workflow works without a frontend fork, but it does not yet expose dedicated setup fields for `wd_risk`, `xd_risk`, `Operational_Alert`, `Operational_Alert_Why`, or `Composite_Risk`.
+This means the current CHAP / DHIS2 workflow works without a frontend fork, but it does not expose a dedicated setup field for `operational_alert`.
 
 Optional enriched CHAP output is also available when needed for downstream testing:
 
@@ -260,61 +250,12 @@ Optional enriched CHAP output is also available when needed for downstream testi
 When enabled, the prediction CSV appends:
 
 - `point_forecast`
-- `wd_risk`
-- `wd_risk_code`
-- `xd_risk`
-- `xd_risk_code`
-- `Operational_Alert`
-- `Operational_Alert_Code`
-- `Operational_Alert_Why`
-- `Composite_Risk`
-- `Composite_Risk_Code`
+- `operational_alert`
+- `operational_alert_code`
 
-Recommended numeric coding for DHIS2:
+Recommended numeric coding for DHIS2: `operational_alert_code` is `0 = No Data`, `1 = Monitor`, `2 = Alert`, `3 = Respond`.
 
-- `Operational_Alert_Code`: `0 = No Data`, `1 = Monitor`, `2 = Alert`, `3 = Respond`
-- `wd_risk_code` and `xd_risk_code`: `0 = No Data`, `1 = Low`, `2 = Moderate`, `3 = High`, `4 = Extreme`
-
-This keeps the default CHAP sample output unchanged while allowing risk-label and operational-alert testing in environments that can tolerate extra columns. These extra columns are useful for local QA, exports, and future Modeling App fork work, but they are not part of the simple production import contract today.
-
-### No-fork Operational Alert workaround
-
-If you need to use the existing `Outbreak indicator` slot without forking the Modeling App, enable the workaround mode:
-
-- CLI: `python chap_model.py predict ... --outbreak-indicator-mode operational_alert_code`
-- env var: `CHAP_OUTBREAK_INDICATOR_MODE=operational_alert_code`
-
-When this mode is enabled, CHAP appends:
-
-- `outbreak_indicator`
-- `outbreak_indicator_label`
-
-Workaround semantics:
-
-- `outbreak_indicator = Operational_Alert_Code`
-- `0 = No Data`
-- `1 = Monitor`
-- `2 = Alert`
-- `3 = Respond`
-
-This is a pragmatic compatibility workaround. It repurposes the outbreak-indicator channel from a binary outbreak signal into a 4-state operational-alert code, so downstream users should treat it as `Operational Alert`, not as the original binary outbreak flag.
-
-### Smallest Modeling App fork for Operational Alert
-
-This repo does not contain the Modeling App source, so that UI/import change still has to be done in the separate app. The smallest fork is:
-
-| Layer | Smallest change |
-|---|---|
-| Prediction setup modal | add a new mapping field named `Operational Alert` |
-| Saved setup schema | store the selected DHIS2 data element for `Operational_Alert_Code` |
-| Import payload builder | send `Operational_Alert_Code` from enriched CHAP output to DHIS2 |
-| DHIS2 metadata | create one numeric data element for the alert code |
-
-Recommended first implementation:
-
-- map `Operational_Alert_Code`, not free text
-- keep the existing quantile and outbreak-indicator mappings unchanged
-- enable enriched CHAP output only in the forked path that knows how to import the extra field
+This keeps the default CHAP sample output unchanged while allowing direct within-district anomaly QA and exports in environments that can tolerate extra columns.
 
 ### Local smoke-test example
 
@@ -324,7 +265,6 @@ Once dependencies are installed, the CHAP path can be exercised locally with:
 python train.py /path/to/train.csv /tmp/model.pkl
 python predict.py /tmp/model.pkl /path/to/historic.csv /path/to/future.csv /tmp/predictions.csv
 CHAP_INCLUDE_RISK_OUTPUT=1 python predict.py /tmp/model.pkl /path/to/historic.csv /path/to/future.csv /tmp/predictions_with_risk.csv
-CHAP_OUTBREAK_INDICATOR_MODE=operational_alert_code python predict.py /tmp/model.pkl /path/to/historic.csv /path/to/future.csv /tmp/predictions_with_outbreak_workaround.csv
 ```
 
 ## Installation
@@ -367,7 +307,8 @@ http://localhost:8501
 
 The app already points to local sample files by default:
 
-- `data/sample/Acute_Malnutrition_data_district.csv`
+- `data/sample/Acute_Malnutrition_data_district_2024_2025.csv` (default app sample, shaped from DHIS2 exports)
+- `data/sample/Acute_Malnutrition_data_district.csv` (legacy sample)
 - `data/sample/uganda-districts_ug.geojson`
 
 In the sidebar you can choose either:
@@ -387,7 +328,7 @@ When a GeoJSON is provided, the app asks you to select the district name column 
 | `District` | District name |
 | `Region` | Region name |
 | `time_period` | Monthly date such as `2020-01` |
-| `Acut_Malnutrition` | GAM caseload, interpreted in the app as SAM + MAM |
+| `Acut_Malnutrition` | Reported GAM cases, interpreted in the app as SAM + MAM |
 | `mean_temperature` | Mean temperature |
 | `rainfall` | Rainfall |
 | `mean_relative_humidity` | Relative humidity |
@@ -397,7 +338,7 @@ When a GeoJSON is provided, the app asks you to select the district name column 
 | `diarrhea_u5` | Diarrhoea cases among children under 5 |
 | `low_birth_weight_babies` | Low birth weight newborns |
 | `sam_admissions_u5` | SAM admissions among children under 5 |
-| `screened_u5` | Under-5 nutrition screening or assessment volume |
+| `screened_u5` | Children assessed; required denominator for the GAM detection-rate target |
 | `reporting_rate` | District health-facility reporting rate, accepted as `0-1` or `0-100` |
 | `population_u5` | District under-5 population |
 
@@ -422,8 +363,8 @@ Observed IPC AMN severity can be calculated if the dataset includes a direct GAM
 
 ### Regression
 
-A `RandomForestRegressor` is used to forecast district GAM caseloads for the next 3 months.
-Forecast anomaly labels and operational alerts are derived from the regression forecast rather than emitted by a classifier in the forecasting path.
+A separate `RandomForestRegressor` is used to forecast district GAM detection rates per 1,000 assessed children directly at horizons 1 and 3 months.
+Forecast anomaly labels are derived from the regression forecast rather than emitted by a classifier in the forecasting path.
 
 ### Features
 
@@ -442,7 +383,6 @@ The model pipeline uses:
 - classified observed CSV
 - forecast CSV
 - within-district anomaly metrics CSV
-- between-district anomaly metrics CSV
 
 ## Screens
 
@@ -451,8 +391,6 @@ The model pipeline uses:
 The app shows side-by-side summaries for:
 
 - within-district anomaly
-- between-districts anomaly
-- operational alert
 
 It also renders observed district maps when a GeoJSON is provided.
 
@@ -466,7 +404,7 @@ The historical anomaly view shows how district counts move across anomaly levels
 
 ### Spearman Correlation Portrait
 
-The drivers view includes a rank-based correlation portrait between GAM caseload and key covariates.
+The drivers view includes a rank-based correlation portrait between GAM detection rate and key covariates.
 
 ![Spearman correlation portrait](Screenshots/Screenshot4.png)
 
