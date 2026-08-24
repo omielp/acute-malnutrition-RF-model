@@ -18,7 +18,7 @@ This application supports early warning and decision support for acute malnutrit
 10. Train Random Forest regression on a log1p GAM detection-rate target; inputs are not full-history standardised, preventing later observations from influencing earlier rows.
 11. Derive within-district risk labels from percentile rules; no Random Forest classifier produces risk labels.
 
-Existing CHAP artifacts created before `chap-rf-v21-loosened-quality-history` must be retrained. The prediction command rejects incompatible artifacts rather than applying an incompatible feature schema or target-quality policy.
+Existing CHAP artifacts created before `chap-rf-v22-finite-chap-samples` must be retrained. The prediction command rejects incompatible artifacts rather than applying an incompatible feature schema or target-quality policy.
 12. Generate separate direct forecasts for horizons 1 and 3; the 3-month model does not use intermediate predictions.
 13. Convert forecasts into within-district risk categories.
 14. Visualize results through maps, charts, risk tables, and model metrics.
@@ -130,9 +130,9 @@ The CHAP interface supports two output modes:
 | Default CHAP mode | default behavior | `time_period`, `location`, `sample_0` to `sample_99` | safest path for CHAP and DHIS2 ingestion |
 | Enriched CHAP mode | `CHAP_INCLUDE_RISK_OUTPUT=1` with `predict.py`, or `python chap_model.py predict ... --include-risk-output` | default CHAP columns plus `point_forecast`, `operational_alert`, `operational_alert_code` | testing or downstream flows that can tolerate extra columns |
 
-When a district has fewer than three valid observed GAM-detection-rate months, its requested future rows are retained with blank samples and `No Data` enriched fields. The model does not create a synthetic GAM history for that district. Enriched within-district anomaly output requires 9 valid observed months.
+CHAP requires finite values in every `sample_*` column. When a district has fewer than three valid observed GAM-detection-rate months, its requested future rows therefore receive a finite fallback distribution derived only from valid GAM detection rates in the training data. It does not create synthetic GAM history, does not use the fallback as observed GAM, and does not add it to training or evaluation. The enriched fields remain `No Data`. Enriched within-district anomaly output requires 9 valid observed months.
 
-The direct models support future months `+1` and `+3` from each district's latest valid GAM observation. A supplied `+2` row is retained with blank samples and `No Data` enriched fields so CHAP receives an honest, non-recursive output rather than an imputed intermediate forecast.
+The direct models support future months `+1` and `+3` from each district's latest valid GAM observation. For a supplied `+2` row, CHAP receives the mean of paired samples from the independent `+1` and `+3` direct models. This finite bridge is non-recursive, does not use a forecast as a model input, and retains `No Data` enriched fields rather than issuing an alert.
 
 In enriched CHAP mode, the added outputs are derived from the regression forecast rather than emitted by a standalone classifier:
 

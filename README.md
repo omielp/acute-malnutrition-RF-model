@@ -222,9 +222,9 @@ The `predict` entrypoint writes a CHAP-compatible CSV with:
 - `sample_0` through `sample_99`
 
 Each `sample_*` column is one forecast draw derived from the fitted random forest, which allows CHAP to calculate uncertainty intervals.
-District-months with fewer than three valid observed GAM-detection-rate months are retained with blank sample values (`No Data`) rather than receiving a forecast based on imputed GAM history.
+CHAP requires every `sample_*` value to be finite. District-months with fewer than three valid observed GAM-detection-rate months therefore receive a finite fallback distribution derived only from valid GAM detection rates in the training data. This compatibility output is not observed GAM, is never added to training or evaluation, and remains `No Data` in enriched alert fields.
 
-The CHAP model uses separate direct models for the future months exactly one and three months after each district's latest valid GAM observation. If CHAP supplies the intermediate `+2` month to maintain a contiguous three-month request, that row is retained with blank samples rather than receiving a recursive forecast.
+The CHAP model uses separate direct models for the future months exactly one and three months after each district's latest valid GAM observation. If CHAP supplies the intermediate `+2` month to maintain a contiguous three-month request, the model returns the average of paired draws from those independent direct models. This is a finite, non-recursive compatibility bridge; its enriched alert fields remain `No Data`.
 
 ### Current CHAP and Modeling App setup
 

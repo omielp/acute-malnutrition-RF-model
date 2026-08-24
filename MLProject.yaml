@@ -40,8 +40,8 @@ meta_data:
     DHIS2 CHAP integration. The model converts reported GAM cases and children
     assessed into GAM detection rates per 1,000 assessed children and returns probabilistic forecasts as sample columns in
     the default CHAP output mode. It uses separate direct models for months +1
-    and +3; an optional +2 input row is retained with blank samples because no
-    recursive month-2 forecast is produced.
+    and +3. If CHAP requests +2, the output uses a non-recursive bridge from
+    the independent +1 and +3 forecast samples so every CHAP sample is finite.
     All clinical and service-delivery covariates are interpreted as under-5
     inputs, with malaria_confirmed_u5, pneumonia_cases_u5, diarrhea_u5,
     and screened_u5 as under-5 case-count or

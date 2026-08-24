@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
@@ -147,7 +148,7 @@ class CausalPreprocessingTests(unittest.TestCase):
             self.assertEqual(predictions.columns.tolist(), expected_columns)
             self.assertEqual(len(predictions), 2)
             self.assertTrue(predictions.loc[predictions["location"] == "A"].filter(like="sample_").ge(0).all().all())
-            self.assertTrue(predictions.loc[predictions["location"] == "B"].filter(like="sample_").isna().all().all())
+            self.assertTrue(np.isfinite(predictions.filter(like="sample_").to_numpy(dtype=float)).all())
 
             predict_model(
                 str(model_path),
@@ -183,6 +184,7 @@ class CausalPreprocessingTests(unittest.TestCase):
             historic_path = workdir / "historic.csv"
             future_path = workdir / "future.csv"
             output_path = workdir / "predictions.csv"
+            enriched_output_path = workdir / "predictions_enriched.csv"
             train.to_csv(train_path, index=False)
             train.to_csv(historic_path, index=False)
             future.to_csv(future_path, index=False)
@@ -193,8 +195,22 @@ class CausalPreprocessingTests(unittest.TestCase):
 
             samples = predictions.filter(like="sample_")
             self.assertTrue(samples.iloc[0].notna().all())
-            self.assertTrue(samples.iloc[1].isna().all())
+            self.assertTrue(samples.iloc[1].notna().all())
             self.assertTrue(samples.iloc[2].notna().all())
+            self.assertTrue(np.isfinite(samples.to_numpy(dtype=float)).all())
+
+            predict_model(
+                str(model_path),
+                str(historic_path),
+                str(future_path),
+                str(enriched_output_path),
+                include_risk_output=True,
+            )
+            enriched = pd.read_csv(enriched_output_path)
+            self.assertEqual(
+                enriched.loc[enriched["time_period"] == "2021-08", "operational_alert"].iloc[0],
+                "No Data",
+            )
 
     def test_missing_or_unreliable_gam_is_not_imputed_or_used_for_training(self):
         data = pd.DataFrame(

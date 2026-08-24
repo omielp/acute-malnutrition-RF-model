@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 
 
-MODEL_VERSION = "chap-rf-v21-loosened-quality-history"
+MODEL_VERSION = "chap-rf-v22-finite-chap-samples"
 RISK_LEVELS = ["Monitor", "Alert", "Respond"]
 RISK_ORDER = {
     "Monitor": 0,
@@ -610,6 +610,7 @@ def train_model(train_data_path: str, model_path: str) -> None:
     artifact = {
         "model_version": MODEL_VERSION,
         "models": models,
+        "fallback_samples": build_fallback_samples(df["disease_cases"]),
     }
     with open(model_path, "wb") as file_obj:
         pickle.dump(artifact, file_obj)
@@ -642,6 +643,42 @@ def sample_from_forest(model: RandomForestRegressor, feature_vector: np.ndarray,
     return np.resize(tree_predictions, N_SAMPLES)
 
 
+def build_fallback_samples(values: pd.Series | np.ndarray) -> np.ndarray:
+    """Return finite training-derived samples for CHAP-required output rows."""
+    valid = pd.to_numeric(pd.Series(values), errors="coerce").dropna().clip(lower=0).to_numpy(dtype=float)
+    if len(valid) == 0:
+        return np.zeros(N_SAMPLES, dtype=float)
+    return np.quantile(valid, np.linspace(0.01, 0.99, N_SAMPLES)).astype(float)
+
+
+def direct_model_samples(
+    model_setup: dict,
+    location: str,
+    location_hist: pd.DataFrame,
+    hist_cases: list[float],
+    target_date: pd.Timestamp,
+) -> np.ndarray:
+    hist = np.asarray(hist_cases, dtype=float)
+    same_month_values = [
+        hist_cases[position]
+        for position, date_value in enumerate(location_hist["Date"])
+        if date_value.month == target_date.month
+    ]
+    feature_row = {
+        "Month_Sin": np.sin(2 * np.pi * target_date.month / 12),
+        "Month_Cos": np.cos(2 * np.pi * target_date.month / 12),
+        "Lag1": float(hist[-1]),
+        "Lag2": float(hist[-2]),
+        "Lag3": float(hist[-3]),
+        "Roll3_Mean": float(np.mean(hist[-3:])),
+        "Seasonal_Lag12": float(same_month_values[-1]) if same_month_values else float(hist[-1]),
+    }
+    feature_row.update(last_known_covariates(location_hist, model_setup["covariate_cols"]))
+    scaler = model_setup["scalers"].get(location, build_fallback_scaler([]))
+    feature_vector = np.array([[feature_row[column] for column in model_setup["feature_cols"]]], dtype=float)
+    return sample_from_forest(model_setup["model"], feature_vector, scaler)
+
+
 def build_prediction_rows(
     historic_df: pd.DataFrame,
     future_df: pd.DataFrame,
@@ -649,6 +686,10 @@ def build_prediction_rows(
     include_risk_output: bool = False,
 ) -> pd.DataFrame:
     rows = []
+    fallback_samples = np.asarray(model_artifact.get("fallback_samples", np.zeros(N_SAMPLES)), dtype=float)
+    fallback_samples = np.nan_to_num(fallback_samples, nan=0.0, posinf=0.0, neginf=0.0)
+    if len(fallback_samples) != N_SAMPLES:
+        fallback_samples = np.resize(fallback_samples, N_SAMPLES)
 
     locations = sorted(set(future_df["location"]))
     for location in locations:
@@ -669,36 +710,45 @@ def build_prediction_rows(
                 (current_date.year - last_date.year) * 12 + current_date.month - last_date.month
                 if pd.notna(last_date) else 0
             )
-            model_setup = model_artifact["models"].get(str(horizon)) if horizon in (1, 3) else None
-            point_forecast = np.nan
-            samples = np.full(N_SAMPLES, np.nan)
+            samples = fallback_samples.copy()
             wd_risk = "No Data"
+            is_direct_forecast = False
 
-            if model_setup is not None and len(hist_cases) >= 3:
-                hist = np.asarray(hist_cases, dtype=float)
-                same_month_values = [
-                    hist_cases[position]
-                    for position, date_value in enumerate(location_hist["Date"])
-                    if date_value.month == current_date.month
-                ]
-                feature_row = {
-                    "Month_Sin": np.sin(2 * np.pi * current_date.month / 12),
-                    "Month_Cos": np.cos(2 * np.pi * current_date.month / 12),
-                    "Lag1": float(hist[-1]),
-                    "Lag2": float(hist[-2]),
-                    "Lag3": float(hist[-3]),
-                    "Roll3_Mean": float(np.mean(hist[-3:])),
-                    "Seasonal_Lag12": float(same_month_values[-1]) if same_month_values else float(hist[-1]),
-                }
-                known_covariates = last_known_covariates(location_hist, model_setup["covariate_cols"])
-                feature_row.update(known_covariates)
-                scaler = model_setup["scalers"].get(location, build_fallback_scaler([]))
-                feature_vector = np.array([[feature_row[column] for column in model_setup["feature_cols"]]], dtype=float)
-                samples = sample_from_forest(model_setup["model"], feature_vector, scaler)
-                point_forecast = float(np.mean(samples))
-                if include_risk_output and len(hist_cases) >= MIN_WITHIN_HISTORY_MONTHS:
-                    p90, p95 = np.percentile(hist, [90, 95])
-                    wd_risk = classify_risk(point_forecast, p90, p95)
+            if len(hist_cases) >= 3:
+                if horizon in (1, 3):
+                    model_setup = model_artifact["models"].get(str(horizon))
+                    if model_setup is not None:
+                        samples = direct_model_samples(
+                            model_setup, location, location_hist, hist_cases, current_date
+                        )
+                        is_direct_forecast = True
+                elif horizon == 2:
+                    # CHAP requires finite samples at every requested timestamp.
+                    # Bridge H2 from independent H1/H3 models without recursion.
+                    h1_model = model_artifact["models"].get("1")
+                    h3_model = model_artifact["models"].get("3")
+                    if h1_model is not None and h3_model is not None:
+                        h1_samples = direct_model_samples(
+                            h1_model,
+                            location,
+                            location_hist,
+                            hist_cases,
+                            last_date + pd.DateOffset(months=1),
+                        )
+                        h3_samples = direct_model_samples(
+                            h3_model,
+                            location,
+                            location_hist,
+                            hist_cases,
+                            last_date + pd.DateOffset(months=3),
+                        )
+                        samples = 0.5 * (h1_samples + h3_samples)
+
+            samples = np.nan_to_num(samples, nan=0.0, posinf=0.0, neginf=0.0)
+            point_forecast = float(np.mean(samples))
+            if include_risk_output and is_direct_forecast and len(hist_cases) >= MIN_WITHIN_HISTORY_MONTHS:
+                p90, p95 = np.percentile(np.asarray(hist_cases, dtype=float), [90, 95])
+                wd_risk = classify_risk(point_forecast, p90, p95)
 
             row = {
                 "time_period": str(future_row["time_period"]),
